@@ -1,0 +1,23 @@
+# Credentials — COWORK_SESSION_KEY is a live claude.ai account credential
+.env
+.env.*
+!.env.example
+
+# Local backups of replaced/deleted docs
+backups/
+trash/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# JetBrains IDE
+.idea/

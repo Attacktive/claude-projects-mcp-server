@@ -1,0 +1,18 @@
+[
+	{
+		"uuid": "<str>",
+		"file_name": "<redacted>",
+		"content": "<redacted>",
+		"created_at": "<str>",
+		"project_uuid": "<str>",
+		"estimated_token_count": 3655
+	},
+	{
+		"uuid": "<str>",
+		"file_name": "<redacted>",
+		"content": "<redacted>",
+		"created_at": "<str>",
+		"project_uuid": "<str>",
+		"estimated_token_count": 2876
+	}
+]

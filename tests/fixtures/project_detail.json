@@ -1,0 +1,28 @@
+{
+	"uuid": "<str>",
+	"name": "<redacted>",
+	"description": "<redacted>",
+	"is_private": true,
+	"creator": {
+		"uuid": "<str>",
+		"full_name": "<redacted>"
+	},
+	"is_starred": false,
+	"is_starter_project": false,
+	"is_harmony_project": false,
+	"type": null,
+	"subtype": null,
+	"settings": {},
+	"archiver": null,
+	"archived_at": null,
+	"created_at": "<str>",
+	"updated_at": "<str>",
+	"permissions": [
+		"<str>",
+		"<str>"
+	],
+	"docs_count": 0,
+	"files_count": 0,
+	"prompt_template": "<redacted>",
+	"organization_role": "<str>"
+}

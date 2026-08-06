@@ -1,0 +1,56 @@
+[project]
+name = "claude-projects-mcp-server"
+version = "0.1.0"
+description = "MCP server exposing Claude Cowork / claude.ai project knowledge documents to Claude Code"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+	"mcp[cli]>=1.2",
+	"mcp-types>=2.0",
+	"curl-cffi>=0.7",
+	"python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+claude-projects-mcp = "claude_projects_mcp.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_projects_mcp"]
+
+[dependency-groups]
+dev = [
+	"anyio>=4.14.2",
+	"pytest>=8",
+	"pytest-httpserver>=1.1",
+	"ruff>=0.9",
+	"werkzeug>=3.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+	"live: hits the real claude.ai API; skipped unless CLAUDE_PROJECTS_LIVE_TESTS=1",
+]
+
+[tool.ruff]
+target-version = "py314"
+# The formatter shares this value, and 320 is ruff's maximum, so this is as close as it gets to "never hard-wrap for width".
+line-length = 320
+
+[tool.ruff.format]
+indent-style = "tab"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# E501: lines are soft-wrapped by the editor, never hard-wrapped for width.
+# SIM108: an if/else statement is preferred over a ternary expression.
+# W191/E101: tabs are the indent style here.
+ignore = ["E501", "SIM108", "W191", "E101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["claude_projects_mcp"]

@@ -1,0 +1,28 @@
+name: 'CI'
+on:
+  push:
+    branches: ['main']
+  pull_request:
+    branches: ['main']
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: 'Test'
+    runs-on: 'ubuntu-latest'
+    steps:
+      - name: 'Checkout code'
+        uses: 'actions/checkout@v7'
+      - name: 'Install uv'
+        uses: 'astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9'
+        with:
+          python-version: '3.14'
+      - name: 'Sync dependencies'
+        run: 'uv sync --locked'
+      - name: 'Run tests'
+        run: 'uv run pytest tests/ -q'
+      - name: 'Run ruff lint'
+        run: 'uv run ruff check .'
+      - name: 'Check formatting'
+        run: 'uv run ruff format --check .'

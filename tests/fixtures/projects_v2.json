@@ -1,0 +1,62 @@
+{
+	"data": [
+		{
+			"uuid": "<str>",
+			"name": "<redacted>",
+			"description": "<redacted>",
+			"is_private": false,
+			"creator": {
+				"uuid": "<str>",
+				"full_name": "<redacted>"
+			},
+			"is_starred": false,
+			"is_starter_project": false,
+			"is_harmony_project": false,
+			"type": null,
+			"subtype": null,
+			"settings": {},
+			"archiver": null,
+			"archived_at": null,
+			"created_at": "<str>",
+			"updated_at": "<str>",
+			"permissions": [
+				"<str>",
+				"<str>"
+			],
+			"docs_count": null,
+			"files_count": null
+		},
+		{
+			"uuid": "<str>",
+			"name": "<redacted>",
+			"description": "<redacted>",
+			"is_private": false,
+			"creator": {
+				"uuid": "<str>",
+				"full_name": "<redacted>"
+			},
+			"is_starred": false,
+			"is_starter_project": false,
+			"is_harmony_project": false,
+			"type": null,
+			"subtype": null,
+			"settings": {},
+			"archiver": null,
+			"archived_at": null,
+			"created_at": "<str>",
+			"updated_at": "<str>",
+			"permissions": [
+				"<str>",
+				"<str>"
+			],
+			"docs_count": null,
+			"files_count": null
+		}
+	],
+	"pagination": {
+		"total": 6,
+		"limit": 30,
+		"offset": 0,
+		"has_more": false
+	}
+}

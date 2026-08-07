@@ -1,0 +1,6 @@
+---
+# Tests are pytest assertions and fixtures, not attack surface; scanning them yields only B101-style noise.
+exclude_dirs: ['tests']
+
+# Backstop for runners that pass files one at a time, where exclude_dirs may not apply: assert is how pytest tests are written.
+skips: ['B101']

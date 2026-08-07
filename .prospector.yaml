@@ -1,0 +1,24 @@
+---
+strictness: 'medium'
+doc-warnings: false
+
+pycodestyle:
+  # Long lines are deliberate: the project soft-wraps prose instead of hard-wrapping it, and ruff's line-length is already maxed out at 320 for the same reason.
+  # E704 fights ruff format, which keeps Protocol stub bodies (`...`) on the def line.
+  disable:
+    - 'E501'
+    - 'E704'
+
+pydocstyle:
+  # The codebase puts the docstring summary on the first line (D212 style); D213 and D203 are the opposing conventions.
+  disable:
+    - 'D203'
+    - 'D213'
+
+pylint:
+  # Ruff covers linting locally, and pylint's import resolution inside Codacy's container false-positives on compiled dependencies.
+  run: false
+
+mccabe:
+  # Complexity is already measured by Codacy's Lizard tool; two thresholds would just disagree.
+  run: false

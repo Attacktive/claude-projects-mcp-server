@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
-	"mcp[cli]>=1.2",
+	"mcp[cli]>=2.0.0",
 	"mcp-types>=2.0",
 	"curl-cffi>=0.7",
 	"python-dotenv>=1.2.2",

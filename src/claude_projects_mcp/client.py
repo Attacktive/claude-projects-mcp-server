@@ -346,6 +346,28 @@ class ClaudeProjectsClient:
 
 	# ----------------------------------------------------------------- upsert
 
+	def _hydrated(self, project_id: str, document: Document) -> Document:
+		"""The document with its content present, fetched if the listing only carried a stub."""
+		if document.is_stub:
+			return self.get_document(project_id, document.uuid)
+
+		return document
+
+	def _delete_documents(self, project_id: str, documents: list[Document]) -> tuple[list[str], list[str]]:
+		"""Delete each document, returning which uuids went and which would not.
+
+		By the time this runs the replacement content is already live, so a failed delete is a leftover duplicate, not a lost write; it is reported rather than raised.
+		"""
+		deleted, failed = [], []
+		for document in documents:
+			try:
+				self.delete_document(project_id, document.uuid)
+				deleted.append(document.uuid)
+			except Exception:
+				failed.append(document.uuid)
+
+		return deleted, failed
+
 	def replace_document(
 		self,
 		project_id: str,
@@ -379,23 +401,11 @@ class ClaudeProjectsClient:
 
 		backup_path = None
 		if existing and backup is not None:
-			previous = existing[0]
-			if previous.is_stub:
-				previous = self.get_document(project_id, previous.uuid)
-
+			previous = self._hydrated(project_id, existing[0])
 			backup_path = backup(file_name, previous.content or "")
 
 		created = self.create_document(project_id, file_name, content)
-
-		replaced, failed = [], []
-		for document in existing:
-			try:
-				self.delete_document(project_id, document.uuid)
-				replaced.append(document.uuid)
-			except Exception:
-				# The new content is already live, so a failed cleanup is a leftover duplicate, not a lost write.
-				# Report it rather than raising.
-				failed.append(document.uuid)
+		replaced, failed = self._delete_documents(project_id, existing)
 
 		return ReplaceResult(
 			uuid=created.uuid,
@@ -404,6 +414,34 @@ class ClaudeProjectsClient:
 			failed_delete_uuids=failed,
 			backup_path=backup_path,
 		)
+
+	def _rename_occupants(self, project_id: str, new_file_name: str, overwrite: bool) -> list[Document]:
+		"""The documents already holding new_file_name, refused unless `overwrite` says to replace them."""
+		occupants = self.find_documents_by_name(project_id, new_file_name)
+		if occupants and not overwrite:
+			uuids = ", ".join(occupant.uuid for occupant in occupants)
+			raise DocExistsError(
+				f"{new_file_name!r} already exists in this project ({uuids}). Pass overwrite=true to replace it — the current content will be backed up first. Use read_document to see it before deciding.",
+				file_name=new_file_name,
+				uuid=occupants[0].uuid,
+			)
+
+		return occupants
+
+	def _rename_backups(self, project_id: str, source: Document, occupants: list[Document], backup: Callable[[str, str], str] | None) -> list[str]:
+		"""Back up everything the rename will delete: the source, then the newest holder of the new name.
+
+		Nothing has been mutated yet when this runs, so a backup that raises aborts the rename cleanly.
+		"""
+		if backup is None:
+			return []
+
+		paths = [backup(source.file_name, source.content or "")]
+		if occupants:
+			newest = self._hydrated(project_id, occupants[0])
+			paths.append(backup(newest.file_name, newest.content or ""))
+
+		return paths
 
 	def rename_document(
 		self,
@@ -426,42 +464,13 @@ class ClaudeProjectsClient:
 		if source.file_name == new_file_name:
 			raise ClaudeProjectsError(f"That document is already named {new_file_name!r}; nothing to rename.")
 
-		occupants = self.find_documents_by_name(project_id, new_file_name)
-		if occupants and not overwrite:
-			uuids = ", ".join(occupant.uuid for occupant in occupants)
-			raise DocExistsError(
-				f"{new_file_name!r} already exists in this project ({uuids}). Pass overwrite=true to replace it — the current content will be backed up first. Use read_document to see it before deciding.",
-				file_name=new_file_name,
-				uuid=occupants[0].uuid,
-			)
-
-		if source.is_stub:
-			source = self.get_document(project_id, source.uuid)
-
-		backup_paths = []
-		if backup is not None:
-			backup_paths.append(backup(source.file_name, source.content or ""))
-			if occupants:
-				newest = occupants[0]
-				if newest.is_stub:
-					newest = self.get_document(project_id, newest.uuid)
-
-				backup_paths.append(backup(new_file_name, newest.content or ""))
-
+		occupants = self._rename_occupants(project_id, new_file_name, overwrite)
+		source = self._hydrated(project_id, source)
+		backup_paths = self._rename_backups(project_id, source, occupants, backup)
 		created = self.create_document(project_id, new_file_name, source.content or "")
 
-		replaced, failed = [], []
-		for doomed in [source, *occupants]:
-			try:
-				self.delete_document(project_id, doomed.uuid)
-			except Exception:
-				# The new document is already live, so a failed cleanup is a leftover, not a lost write.
-				# Report it rather than raising.
-				failed.append(doomed.uuid)
-				continue
-
-			if doomed.uuid != source.uuid:
-				replaced.append(doomed.uuid)
+		deleted, failed = self._delete_documents(project_id, [source, *occupants])
+		replaced = [uuid for uuid in deleted if uuid != source.uuid]
 
 		return RenameResult(
 			uuid=created.uuid,

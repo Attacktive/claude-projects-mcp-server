@@ -30,19 +30,32 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
 
 ## Setup
 
-```bash
-uv sync
-cp .env.example .env   # then fill in CLAUDE_PROJECTS_SESSION_KEY
-```
-
 Get the session key from claude.ai in a browser: DevTools → Application → Cookies → `sessionKey` (starts with `sk-ant-sid02-`, or `sid01-` on older accounts).
 It expires periodically; when a tool reports a 401, copy a fresh one.
 
-Register with Claude Code:
+Put it in an env file anywhere (`.env.example` lists every key the server reads):
 
 ```bash
+CLAUDE_PROJECTS_SESSION_KEY=sk-ant-sid02-...
+```
+
+Register with Claude Code straight from this repository — no clone needed:
+
+```bash
+claude mcp add claude-projects -- uvx --env-file /path/to/.env --from 'git+https://github.com/Attacktive/claude-projects-mcp-server@main' claude-projects-mcp
+```
+
+`uv` caches the commit it resolves, so a later push to `main` is not picked up automatically; run `uv cache clean claude-projects-mcp-server` to update, or pin a tag instead of `@main` to move only on releases.
+
+### From a local checkout (development)
+
+```bash
+uv sync
+cp .env.example .env   # then fill in CLAUDE_PROJECTS_SESSION_KEY
 claude mcp add claude-projects -- uv run --directory /path/to/claude-projects-mcp-server claude-projects-mcp
 ```
+
+Run this way, the server finds the `.env` sitting next to the project by itself; `--env-file` is only needed for the git-URL form, whose install location is an ephemeral virtual environment managed by `uv`.
 
 ## Tools
 

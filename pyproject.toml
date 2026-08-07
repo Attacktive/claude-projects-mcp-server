@@ -1,6 +1,6 @@
 [project]
 name = "claude-projects-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server exposing Claude Cowork / claude.ai project knowledge documents to Claude Code"
 readme = "README.md"
 license = "MIT"

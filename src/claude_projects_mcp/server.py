@@ -1,4 +1,4 @@
-"""The MCP surface: eleven tools over claude.ai / Claude Cowork projects and their documents.
+"""The MCP surface: twelve tools over claude.ai / Claude Cowork projects and their documents.
 
 `build_server` is the injection seam.
 It knows nothing about how it will be served, so adding a Streamable HTTP entrypoint later is a new `main`, not a refactor.
@@ -254,12 +254,40 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 		}
 
 	@server.tool(
+		annotations=ToolAnnotations(destructive_hint=False),
+		description="Rename a document, by uuid or by an unambiguous file name. The content is re-created under the new name before the original is deleted, with local backups first, so nothing is lost midway. A new name already in use is refused unless overwrite=true, which replaces its holder (backed up first).",
+	)
+	def rename_document(project_id: str, document: str, new_file_name: str, overwrite: bool = False) -> dict:
+		with translated():
+			result = client.rename_document(
+				project_id,
+				document,
+				new_file_name,
+				overwrite=overwrite,
+				backup=backup_for(project_id),
+			)
+
+		warning = None
+		if result.failed_delete_uuids:
+			warning = f"The document now exists as {result.new_file_name!r}, but {len(result.failed_delete_uuids)} old copy could not be removed and remains: {', '.join(result.failed_delete_uuids)}. Remove it with delete_document."
+
+		return {
+			"uuid": result.uuid,
+			"old_uuid": result.old_uuid,
+			"old_file_name": result.old_file_name,
+			"new_file_name": result.new_file_name,
+			"replaced_uuids": result.replaced_uuids,
+			"backup_paths": result.backup_paths,
+			"warning": warning,
+		}
+
+	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
 		description="Delete a document, by uuid or by an unambiguous file name. The content is backed up locally first. A name shared by several documents is refused: pass the uuid to say which one.",
 	)
 	def delete_document(project_id: str, document: str) -> dict:
 		with translated():
-			target = _one_document(client, project_id, document)
+			target = client.one_document(project_id, document)
 			if target.is_stub:
 				target = client.get_document(project_id, target.uuid)
 
@@ -339,21 +367,6 @@ class translated:
 			return False
 
 		raise ToolError(str(exception)) from exception
-
-
-def _one_document(client: ClaudeProjectsClient, project_id: str, document: str) -> Document:
-	if looks_like_uuid(document):
-		return client.get_document(project_id, document)
-
-	matches = client.find_documents_by_name(project_id, document)
-	if not matches:
-		raise ToolError(f"No document named {document!r} in this project. Use list_documents to see what is there.")
-
-	if len(matches) > 1:
-		uuids = ", ".join(match.uuid for match in matches)
-		raise ToolError(f"{document!r} names {len(matches)} documents in this project ({uuids}). Pass the uuid of the one you mean.")
-
-	return matches[0]
 
 
 def _project_dict(project: Project) -> dict:

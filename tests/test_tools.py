@@ -47,7 +47,7 @@ async def call(server, tool, **arguments):
 
 
 class TestRegistration:
-	async def test_exposes_exactly_the_eleven_tools(self, server):
+	async def test_exposes_exactly_the_twelve_tools(self, server):
 		tools = await server.list_tools()
 
 		assert {tool.name for tool in tools} == {
@@ -59,6 +59,7 @@ class TestRegistration:
 			"list_documents",
 			"read_document",
 			"write_document",
+			"rename_document",
 			"delete_document",
 			"pull_documents",
 			"push_documents",
@@ -87,6 +88,9 @@ class TestRegistration:
 
 		read_annotations = tools["read_document"].annotations
 		assert read_annotations is not None and read_annotations.read_only_hint is True
+
+		rename_annotations = tools["rename_document"].annotations
+		assert rename_annotations is not None and rename_annotations.destructive_hint is False, "the destructive path is opt-in and backed up, like write_document's"
 
 
 class TestProjectResolution:
@@ -228,6 +232,69 @@ class TestWriteDoc:
 
 		assert "re-read" in str(exception_info.value)
 		assert api.content_of(PROJECT, "notes.md") == ["a teammate saved this"]
+
+
+class TestRenameDocument:
+	async def test_renames_a_document(self, api, server):
+		uuid = api.add_document(PROJECT, "notes.md", "hello")
+
+		result = await call(server, "rename_document", project_id=PROJECT, document="notes.md", new_file_name="plan.md")
+
+		assert api.document_names(PROJECT) == ["plan.md"]
+		assert api.content_of(PROJECT, "plan.md") == ["hello"]
+		assert result["old_uuid"] == uuid
+		assert result["new_file_name"] == "plan.md"
+
+	async def test_the_source_is_backed_up(self, api, server, tmp_path):
+		api.add_document(PROJECT, "notes.md", "hello")
+
+		result = await call(server, "rename_document", project_id=PROJECT, document="notes.md", new_file_name="plan.md")
+
+		written = [path for path in (tmp_path / "trash").rglob("*") if path.is_file()]
+		assert len(written) == 1
+		assert written[0].read_text(encoding="utf-8") == "hello"
+		assert result["backup_paths"] == [str(written[0])]
+
+	async def test_a_taken_name_is_a_tool_error_naming_the_occupant(self, api, server):
+		api.add_document(PROJECT, "notes.md", "hello")
+		occupant = api.add_document(PROJECT, "plan.md", "occupied")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "rename_document", project_id=PROJECT, document="notes.md", new_file_name="plan.md")
+
+		message = str(exception_info.value)
+		assert occupant in message and "overwrite" in message
+
+	async def test_overwrite_replaces_the_occupant(self, api, server):
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.add_document(PROJECT, "plan.md", "doomed")
+
+		result = await call(server, "rename_document", project_id=PROJECT, document="notes.md", new_file_name="plan.md", overwrite=True)
+
+		assert api.content_of(PROJECT, "plan.md") == ["hello"]
+		assert len(result["replaced_uuids"]) == 1
+
+	async def test_renaming_to_the_same_name_is_a_tool_error(self, api, server):
+		uuid = api.add_document(PROJECT, "notes.md", "hello")
+
+		with pytest.raises(ToolError, match="already named"):
+			await call(server, "rename_document", project_id=PROJECT, document=uuid, new_file_name="notes.md")
+
+		assert api.document_names(PROJECT) == ["notes.md"]
+
+	async def test_an_ambiguous_source_is_a_tool_error_listing_the_candidates(self, api, server):
+		first = api.add_document(PROJECT, "notes.md", "one")
+		second = api.add_document(PROJECT, "notes.md", "two")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "rename_document", project_id=PROJECT, document="notes.md", new_file_name="plan.md")
+
+		message = str(exception_info.value)
+		assert first in message and second in message
+
+	async def test_a_missing_source_is_a_tool_error(self, server):
+		with pytest.raises(ToolError, match="absent.md"):
+			await call(server, "rename_document", project_id=PROJECT, document="absent.md", new_file_name="plan.md")
 
 
 class TestDeleteDoc:

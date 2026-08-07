@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .errors import ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, NotFoundError, RateLimitedError
+from .errors import AmbiguousDocError, ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, NotFoundError, RateLimitedError
 from .models import Document, Organization, Project
 from .transport import HttpMethod, Transport
 
@@ -46,6 +46,19 @@ class ReplaceResult:
 			return "replaced"
 
 		return "created"
+
+
+@dataclass
+class RenameResult:
+	"""What a rename actually did, including the parts that did not go to plan."""
+
+	uuid: str
+	old_uuid: str
+	old_file_name: str
+	new_file_name: str
+	replaced_uuids: list[str] = field(default_factory=list)
+	failed_delete_uuids: list[str] = field(default_factory=list)
+	backup_paths: list[str] = field(default_factory=list)
 
 
 class ClaudeProjectsClient:
@@ -289,6 +302,28 @@ class ClaudeProjectsClient:
 
 		return newest
 
+	def one_document(self, project_id: str, document: str) -> Document:
+		"""Resolve a uuid or a file name to exactly one document, for the operations that must not guess.
+
+		A file name shared by several documents is refused rather than resolved to the newest, unlike read_document: reading the wrong duplicate is recoverable, deleting or renaming it is not.
+		"""
+		if looks_like_uuid(document):
+			return self.get_document(project_id, document)
+
+		matches = self.find_documents_by_name(project_id, document)
+		if not matches:
+			raise NotFoundError(f"No document named {document!r} in this project. Use list_documents to see what is there.")
+
+		if len(matches) > 1:
+			uuids = [match.uuid for match in matches]
+			raise AmbiguousDocError(
+				f"{document!r} names {len(matches)} documents in this project ({', '.join(uuids)}). Pass the uuid of the one you mean.",
+				file_name=document,
+				uuids=uuids,
+			)
+
+		return matches[0]
+
 	def create_document(self, project_id: str, file_name: str, content: str) -> Document:
 		raw = self._request(
 			"POST",
@@ -368,6 +403,74 @@ class ClaudeProjectsClient:
 			replaced_uuids=replaced,
 			failed_delete_uuids=failed,
 			backup_path=backup_path,
+		)
+
+	def rename_document(
+		self,
+		project_id: str,
+		document: str,
+		new_file_name: str,
+		overwrite: bool = False,
+		backup: Callable[[str, str], str] | None = None,
+	) -> RenameResult:
+		"""Move a document to a new file name, re-creating the content server-side.
+
+		The API has no rename endpoint, so this creates the document under the new name and only then deletes the original — the same ordering argument as replace_document: nothing is deleted until the content exists remotely under the new name and everything doomed has been backed up locally.
+		A crash between the create and the deletes leaves the document under both names; that is visible, recoverable residue rather than a lost write, and it will not appear in duplicate_file_names because the names differ.
+
+		A new_file_name already in use is refused unless `overwrite` is set, in which case every document holding it is replaced, write-style: the newest is backed up first.
+		`backup` receives (file_name, content) and returns where it was saved; if it raises, nothing is mutated.
+		"""
+		source = self.one_document(project_id, document)
+
+		if source.file_name == new_file_name:
+			raise ClaudeProjectsError(f"That document is already named {new_file_name!r}; nothing to rename.")
+
+		occupants = self.find_documents_by_name(project_id, new_file_name)
+		if occupants and not overwrite:
+			uuids = ", ".join(occupant.uuid for occupant in occupants)
+			raise DocExistsError(
+				f"{new_file_name!r} already exists in this project ({uuids}). Pass overwrite=true to replace it — the current content will be backed up first. Use read_document to see it before deciding.",
+				file_name=new_file_name,
+				uuid=occupants[0].uuid,
+			)
+
+		if source.is_stub:
+			source = self.get_document(project_id, source.uuid)
+
+		backup_paths = []
+		if backup is not None:
+			backup_paths.append(backup(source.file_name, source.content or ""))
+			if occupants:
+				newest = occupants[0]
+				if newest.is_stub:
+					newest = self.get_document(project_id, newest.uuid)
+
+				backup_paths.append(backup(new_file_name, newest.content or ""))
+
+		created = self.create_document(project_id, new_file_name, source.content or "")
+
+		replaced, failed = [], []
+		for doomed in [source, *occupants]:
+			try:
+				self.delete_document(project_id, doomed.uuid)
+			except Exception:
+				# The new document is already live, so a failed cleanup is a leftover, not a lost write.
+				# Report it rather than raising.
+				failed.append(doomed.uuid)
+				continue
+
+			if doomed.uuid != source.uuid:
+				replaced.append(doomed.uuid)
+
+		return RenameResult(
+			uuid=created.uuid,
+			old_uuid=source.uuid,
+			old_file_name=source.file_name,
+			new_file_name=new_file_name,
+			replaced_uuids=replaced,
+			failed_delete_uuids=failed,
+			backup_paths=backup_paths,
 		)
 
 

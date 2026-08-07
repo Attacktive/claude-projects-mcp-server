@@ -11,7 +11,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All eleven tools are implemented and covered by 246 tests, and the full read-and-write path has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, and a project through create, read, update, and delete.
+All twelve tools are implemented and covered by 271 tests, and the full read-and-write path has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, and a project through create, read, update, and delete.
 
 What that established, and what the implementation now relies on:
 
@@ -77,6 +77,7 @@ Run this way, the server finds the `.env` sitting next to the project by itself;
 | `list_documents` | Documents in a project, flagging any duplicate file names |
 | `read_document` | One document by uuid or file name |
 | `write_document` | Create, or replace with `overwrite=true` |
+| `rename_document` | Move a document to a new file name; a name already in use needs `overwrite=true` |
 | `delete_document` | Remove a document (always backed up first) |
 | `pull_documents` | Copy a project's documents into a local folder |
 | `push_documents` | Upload a local folder's documents into a project |
@@ -94,6 +95,7 @@ These are shared team documents, and the API has no server-side undo, so:
 - replacing an existing document requires an explicit `overwrite=true`
 - the previous content is written to a local backup directory *before* any replacement
 - `write_document` accepts an `expected_uuid` to refuse the write if a teammate changed the document since you read it
+- `rename_document` re-creates the content under the new name before deleting the original — the API has no rename, so a crash midway leaves the document under both names rather than under none
 - `push_documents` never deletes remote documents that are missing locally — it is not a mirror
 
 `delete_project` is the sharpest tool here, because it takes every document with it.

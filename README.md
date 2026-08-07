@@ -30,6 +30,14 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
 
 ## Setup
 
+Everything below runs through [`uv`](https://docs.astral.sh/uv/) — `uvx` ships with it — so install that first:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Other installation methods (Windows, Homebrew, pip) are in [uv's installation documentation](https://docs.astral.sh/uv/getting-started/installation/).
+
 Get the session key from claude.ai in a browser: DevTools → Application → Cookies → `sessionKey` (starts with `sk-ant-sid02-`, or `sid01-` on older accounts).
 It expires periodically; when a tool reports a 401, copy a fresh one.
 

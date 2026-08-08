@@ -21,6 +21,8 @@ _CRON_HELP = "cron_expression must be five space-separated fields in UTC — min
 
 _MODEL_HELP = "Model ids look like 'claude-sonnet-5', or 'default' to follow the project's own setting."
 
+_UNMATCHED_HELP = "None of the {count} scheduled tasks in this organization could be matched to project {project_id}. They may all belong to other projects, or the way claude.ai names a task's project may have changed. Every task in the organization is listed instead; check each task's project_id before acting on it."
+
 
 def _model_warning(model: str | None) -> str | None:
 	"""Flag a model id the API will accept but the scheduler probably cannot use.
@@ -32,6 +34,15 @@ def _model_warning(model: str | None) -> str | None:
 		return None
 
 	return f"{model!r} does not look like a model id, and claude.ai accepts it without checking, so the task may fail when it runs. {_MODEL_HELP}"
+
+
+def _listing(tasks: list[ScheduledTask], project_id: str | None, warning: str | None = None) -> dict:
+	"""The listing answer, in one place so the three ways of reaching it cannot drift apart."""
+	return {
+		"tasks": [_task_dict(task) for task in tasks],
+		"project_id": project_id,
+		"warning": warning,
+	}
 
 
 def _task_dict(task: ScheduledTask) -> dict:
@@ -73,8 +84,16 @@ class translated:
 
 
 def register(server: MCPServer, client: ClaudeProjectsClient) -> None:
-	"""Add the scheduled-task tools to an already-built server."""
+	"""Add the scheduled-task tools to an already-built server.
 
+	Split by what the tools do to the world, the same way `server.py` groups its own, because one function holding five closures grows past the point where anyone can see its shape.
+	"""
+	_register_reading(server, client)
+	_register_writing(server, client)
+	_register_deleting(server, client)
+
+
+def _register_reading(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
 		description="List Cowork scheduled tasks. Pass project_id for one project's tasks, or nothing for every task on the account. Schedules are cron expressions in UTC; a task with none runs only when started by hand.",
@@ -82,28 +101,16 @@ def register(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	def list_scheduled_tasks(project_id: str | None = None, organization_id: str | None = None) -> dict:
 		with translated():
 			if project_id is None:
-				return {
-					"tasks": [_task_dict(task) for task in client.list_scheduled_tasks(organization_id=organization_id)],
-					"project_id": None,
-					"warning": None,
-				}
+				return _listing(client.list_scheduled_tasks(organization_id=organization_id), None)
 
 			found = client.scheduled_tasks_for_project(project_id)
 
 		# A project id is matched against an id the API derives, so an empty result has two very different causes.
 		# Falling back to the whole listing keeps "the encoding changed" from reading as "nothing is scheduled here".
 		if found.mapping_looks_broken:
-			return {
-				"tasks": [_task_dict(task) for task in found.in_organization],
-				"project_id": project_id,
-				"warning": f"None of the {len(found.in_organization)} scheduled tasks in this organization could be matched to project {project_id}. They may all belong to other projects, or the way claude.ai names a task's project may have changed. Every task in the organization is listed instead; check each task's project_id before acting on it.",
-			}
+			return _listing(found.in_organization, project_id, warning=_UNMATCHED_HELP.format(count=len(found.in_organization), project_id=project_id))
 
-		return {
-			"tasks": [_task_dict(task) for task in found.matched],
-			"project_id": project_id,
-			"warning": None,
-		}
+		return _listing(found.matched, project_id)
 
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
@@ -113,6 +120,8 @@ def register(server: MCPServer, client: ClaudeProjectsClient) -> None:
 		with translated():
 			return _task_dict(client.get_scheduled_task(task_id))
 
+
+def _register_writing(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
 		description="Create a scheduled task in a project. Omit cron_expression for a task that only runs when started by hand. cron_expression is five fields in UTC, not local time — '0 0 * * 1' is Monday 00:00 UTC. The answer carries next_run_at so the schedule can be checked before it matters.",
@@ -147,7 +156,7 @@ def register(server: MCPServer, client: ClaudeProjectsClient) -> None:
 		enabled: bool | None = None,
 		model: str | None = None,
 	) -> dict:
-		if name is None and prompt is None and cron_expression is None and enabled is None and model is None:
+		if all(value is None for value in (name, prompt, cron_expression, enabled, model)):
 			raise ToolError("Nothing to update. Pass at least one of name, prompt, cron_expression, enabled, or model. Use get_scheduled_task to see the current values.")
 
 		with translated():
@@ -162,6 +171,8 @@ def register(server: MCPServer, client: ClaudeProjectsClient) -> None:
 
 		return {**_task_dict(updated), "warning": _model_warning(model)}
 
+
+def _register_deleting(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
 		description="Delete a scheduled task. Unlike documents, nothing is backed up first — a task is a prompt and a schedule, not content — so prefer update_scheduled_task with enabled=false if you only want it to stop running.",

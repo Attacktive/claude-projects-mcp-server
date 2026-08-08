@@ -3,7 +3,6 @@
 `server.call_tool` exercises the real registration and schema path without any session plumbing, so these are end-to-end over the whole stack down to the fake API.
 """
 
-import json
 from pathlib import Path
 
 import pytest
@@ -15,35 +14,14 @@ from claude_projects_mcp.config import Settings
 from claude_projects_mcp.errors import ApiError
 from claude_projects_mcp.server import build_server
 
-from .conftest import ORGANIZATION, PROJECT
+from .conftest import ORGANIZATION, PROJECT, call
 
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
-def anyio_backend():
-	return "asyncio"
-
-
-@pytest.fixture
-def settings(tmp_path: Path) -> Settings:
-	return Settings.from_env(
-		{
-			"CLAUDE_PROJECTS_SESSION_KEY": "sk-ant-sid01-test",
-			"CLAUDE_PROJECTS_BACKUP_DIRECTORY": str(tmp_path / "trash"),
-		}
-	)
-
-
-@pytest.fixture
 def server(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 	return build_server(settings, client=client)
-
-
-async def call(server, tool, **arguments):
-	# `tool` rather than `name`, so a tool taking a `name` argument can still be called.
-	result = await server.call_tool(tool, arguments)
-	return json.loads(result.content[0].text)
 
 
 class TestRegistration:

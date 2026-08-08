@@ -466,21 +466,14 @@ class ClaudeProjectsClient:
 		None means "leave it alone" throughout, which is why there is no way to clear a schedule here: `cron_expression=None` is indistinguishable from not passing it.
 		Pausing is what `enabled=False` is for, and it is the better answer anyway — it keeps the prompt.
 		"""
-		payload: dict[str, Any] = {}
-		if name is not None:
-			payload["name"] = name
-
-		if prompt is not None:
-			payload["prompt"] = prompt
-
-		if cron_expression is not None:
-			payload["cron_expression"] = cron_expression
-
-		if enabled is not None:
-			payload["enabled"] = enabled
-
-		if model is not None:
-			payload["model"] = model
+		changes: dict[str, Any] = {
+			"name": name,
+			"prompt": prompt,
+			"cron_expression": cron_expression,
+			"enabled": enabled,
+			"model": model,
+		}
+		payload = {field: value for field, value in changes.items() if value is not None}
 
 		if not payload:
 			raise ValueError("Nothing to update: pass at least one of name, prompt, cron_expression, enabled, or model.")

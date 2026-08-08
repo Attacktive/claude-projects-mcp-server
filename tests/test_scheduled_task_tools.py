@@ -3,7 +3,6 @@
 Same end-to-end path as `test_tools.py`: real registration, real schemas, fake API underneath.
 """
 
-import json
 from pathlib import Path
 
 import pytest
@@ -14,25 +13,10 @@ from claude_projects_mcp.client import ClaudeProjectsClient
 from claude_projects_mcp.config import Settings
 from claude_projects_mcp.server import build_server
 
-from .conftest import ORGANIZATION
+from .conftest import ORGANIZATION, call
 from .test_scheduled_tasks import OTHER_PROJECT_UUID, PROJECT_UUID
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture
-def anyio_backend():
-	return "asyncio"
-
-
-@pytest.fixture
-def settings(tmp_path: Path) -> Settings:
-	return Settings.from_env(
-		{
-			"CLAUDE_PROJECTS_SESSION_KEY": "sk-ant-sid01-test",
-			"CLAUDE_PROJECTS_BACKUP_DIRECTORY": str(tmp_path / "trash"),
-		}
-	)
 
 
 @pytest.fixture
@@ -45,11 +29,6 @@ def scheduled_api(api):
 @pytest.fixture
 def server(settings: Settings, scheduled_api) -> MCPServer:
 	return build_server(settings, client=ClaudeProjectsClient(scheduled_api))
-
-
-async def call(server, tool, **arguments):
-	result = await server.call_tool(tool, arguments)
-	return json.loads(result.content[0].text)
 
 
 class TestListing:

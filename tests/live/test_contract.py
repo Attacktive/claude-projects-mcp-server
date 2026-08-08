@@ -20,6 +20,10 @@ pytestmark = pytest.mark.live
 CONTRACT_DOCUMENT = "__claude_projects_mcp_contract_test__.md"
 CONTRACT_PROJECT = "__claude_projects_mcp_contract_test_project__"
 DOCUMENT_HOST_PROJECT = "__claude_projects_mcp_contract_test_docs__"
+CONTRACT_TASK = "__claude_projects_mcp_contract_test_task__"
+
+# Monday at midnight UTC: days away whatever day this runs, so a task deleted moments later can never have fired.
+CONTRACT_CRON = "0 0 * * 1"
 
 skip_unless_live = pytest.mark.skipif(
 	os.environ.get("CLAUDE_PROJECTS_LIVE_TESTS") != "1",
@@ -118,6 +122,64 @@ def test_a_document_round_trips(client, project):
 			client.delete_document(project, created.uuid)
 
 	assert client.find_documents_by_name(project, CONTRACT_DOCUMENT) == [], "contract test left a document behind — delete it in the web UI"
+
+
+@skip_unless_live
+def test_a_scheduled_task_round_trips(client, project):
+	"""Create, read, schedule, pause, then delete — the full task path against the real API.
+
+	Created manual-only, so the task cannot run at all until the update gives it a cron, and that cron is days out.
+	The delete is in a finally block for the same reason every other contract test's is: a stray here is a task that would eventually run on its own.
+	"""
+	created = None
+	try:
+		created = client.create_scheduled_task(project, CONTRACT_TASK, "Contract test. Do nothing.")
+		assert created.id
+		assert created.is_manual, "a task created without a cron must not be scheduled"
+		assert created.next_run_at is None, "the zero-time sentinel must not parse as a date"
+		assert created.project_uuid == project, "chat_project_id must decode back to the project it was created against"
+
+		fetched = client.get_scheduled_task(created.id)
+		assert fetched.name == CONTRACT_TASK
+		assert fetched.prompt == "Contract test. Do nothing.", "the prompt must still be reachable inside job_config"
+
+		scheduled = client.update_scheduled_task(created.id, cron_expression=CONTRACT_CRON)
+		assert scheduled.cron_expression == CONTRACT_CRON
+		assert scheduled.next_run_at is not None, "a scheduled task must report when it next runs"
+
+		paused = client.update_scheduled_task(created.id, enabled=False)
+		assert paused.enabled is False, "the API omits `enabled` when false; absent must not parse as active"
+		assert paused.cron_expression == CONTRACT_CRON, "pausing must not discard the schedule"
+
+		assert client.get_scheduled_task(created.id).enabled is False, "the pause must survive a re-read"
+	finally:
+		for stray in client.list_scheduled_tasks():
+			if stray.name == CONTRACT_TASK:
+				client.delete_scheduled_task(stray.id)
+
+	assert [task for task in client.list_scheduled_tasks() if task.name == CONTRACT_TASK] == [], "contract test left a scheduled task behind — delete it in the web UI"
+
+	if created is not None:
+		assert client.delete_scheduled_task(created.id) is False, "deleting something already gone is not a failure"
+
+
+@skip_unless_live
+def test_a_projects_scheduled_tasks_can_be_found_by_project(client, project):
+	"""The derived chat_project_id has to match what the API really reports.
+
+	This is the one assertion the offline suite cannot make honestly: there, both sides of the comparison come from our own encoder.
+	"""
+	created = None
+	try:
+		created = client.create_scheduled_task(project, CONTRACT_TASK, "Contract test. Do nothing.")
+
+		found = client.scheduled_tasks_for_project(project)
+
+		assert [task.id for task in found.matched] == [created.id]
+		assert found.mapping_looks_broken is False, "the chat_project_id encoding no longer matches what claude.ai sends"
+	finally:
+		if created is not None:
+			client.delete_scheduled_task(created.id)
 
 
 @skip_unless_live

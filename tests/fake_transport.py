@@ -15,6 +15,7 @@ import urllib.parse
 from typing import Any
 
 from claude_projects_mcp.errors import ApiError, NotFoundError
+from claude_projects_mcp.identifiers import chat_project_id
 
 _ORGANIZATIONS = re.compile(r"^/organizations$")
 _PROJECTS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects$")
@@ -22,6 +23,11 @@ _PROJECTS_V2 = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects_v2$
 _PROJECT = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)$")
 _DOCUMENTS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/docs$")
 _DOCUMENT = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/docs/(?P<document>[^/]+)$")
+_SCHEDULED_TASKS = re.compile(r"^/organizations/(?P<organization>[^/]+)/cowork/scheduled_tasks$")
+_SCHEDULED_TASK = re.compile(r"^/organizations/(?P<organization>[^/]+)/cowork/scheduled_tasks/(?P<task>[^/]+)$")
+
+# Five whitespace-separated fields. The real API rejects anything else with a 400, and so must this.
+_CRON = re.compile(r"^\s*(\S+\s+){4}\S+\s*$")
 
 
 class FakeClaudeProjectsApi:
@@ -36,6 +42,7 @@ class FakeClaudeProjectsApi:
 		self.organizations: list[dict] = []
 		self.projects: dict[str, dict] = {}
 		self.documents: dict[str, list[dict]] = {}
+		self.scheduled_tasks: dict[str, dict] = {}
 		self.log: list[tuple[str, str]] = []
 		self.closed = False
 
@@ -83,6 +90,33 @@ class FakeClaudeProjectsApi:
 		self.documents.setdefault(project_uuid, []).append(document)
 		return document["uuid"]
 
+	def add_scheduled_task(
+		self,
+		organization_uuid: str,
+		name: str = "Task",
+		prompt: str = "Do the thing.",
+		project_uuid: str | None = None,
+		cron_expression: str | None = None,
+		enabled: bool = True,
+		model: str | None = None,
+		task_id: str | None = None,
+	) -> str:
+		task_id = task_id or self._next_task_id()
+		self.scheduled_tasks[task_id] = {
+			"id": task_id,
+			"name": name,
+			"prompt": prompt,
+			"cron_expression": cron_expression,
+			"enabled": enabled,
+			"model": model,
+			"created_at": self._stamp(),
+			"updated_at": self._stamp(),
+			"_organization": organization_uuid,
+			"_project": project_uuid,
+		}
+
+		return task_id
+
 	def fail_once(self, method: str, path_pattern: str, exception: Exception) -> None:
 		"""Make the next matching request raise, then behave normally again."""
 		self._faults.append((method.upper(), re.compile(path_pattern), exception))
@@ -115,6 +149,9 @@ class FakeClaudeProjectsApi:
 		if method == "PUT":
 			return self._put(path, json_body or {})
 
+		if method == "PATCH":
+			return self._patch(path, json_body or {})
+
 		if method == "DELETE":
 			return self._delete(path)
 
@@ -146,12 +183,26 @@ class FakeClaudeProjectsApi:
 		if match:
 			return self._public_document(self._find_document(match["project"], match["document"]), with_content=True)
 
+		match = _SCHEDULED_TASKS.match(path)
+		if match:
+			# The real listing ignores every query parameter it is given, so the fake must not pretend to filter either.
+			rows = [self._public_task(task) for task in self.scheduled_tasks.values() if task["_organization"] == match["organization"]]
+			return {"data": rows}
+
+		match = _SCHEDULED_TASK.match(path)
+		if match:
+			return {"trigger": self._public_task(self._find_task(match["task"]))}
+
 		raise ApiError(f"FakeClaudeProjectsApi has no route for GET {path}", status=404)
 
 	def _post(self, path: str, body: dict) -> Any:
 		match = _PROJECTS.match(path)
 		if match:
 			return self._create_project(match["organization"], body)
+
+		match = _SCHEDULED_TASKS.match(path)
+		if match:
+			return self._create_scheduled_task(match["organization"], body)
 
 		match = _DOCUMENTS.match(path)
 		if not match:
@@ -187,7 +238,31 @@ class FakeClaudeProjectsApi:
 		project["updated_at"] = self._stamp()
 		return self._public_project(project)
 
+	def _patch(self, path: str, body: dict) -> Any:
+		match = _SCHEDULED_TASK.match(path)
+		if not match:
+			raise ApiError(f"FakeClaudeProjectsApi has no route for PATCH {path}", status=404)
+
+		task = self._find_task(match["task"])
+
+		if "cron_expression" in body and body["cron_expression"] is not None and not _CRON.match(str(body["cron_expression"])):
+			raise ApiError("The request is invalid.", status=400)
+
+		for key in ("name", "prompt", "cron_expression", "enabled", "model"):
+			if key in body:
+				task[key] = body[key]
+
+		task["updated_at"] = self._stamp()
+		return {"trigger": self._public_task(task)}
+
 	def _delete(self, path: str) -> Any:
+		match = _SCHEDULED_TASK.match(path)
+		if match:
+			task = self._find_task(match["task"])
+			del self.scheduled_tasks[task["id"]]
+			# The real API answers a delete with a body rather than an empty 204.
+			return {"deleted_session_count": 0}
+
 		match = _PROJECT.match(path)
 		if match:
 			project = self._find_project(match["project"])
@@ -237,6 +312,26 @@ class FakeClaudeProjectsApi:
 		# The create response omits prompt_template, exactly like the listing.
 		return self._public_project(self.projects[uuid], with_instructions=False)
 
+	def _create_scheduled_task(self, organization_uuid: str, body: dict) -> dict:
+		if "name" not in body:
+			raise ApiError("name: Field required", status=400)
+
+		cron = body.get("cron_expression")
+		if cron is not None and not _CRON.match(str(cron)):
+			raise ApiError("The request is invalid.", status=400)
+
+		# `model` is deliberately not validated: the real API accepts any string, which is exactly why the tool layer warns about one that looks wrong.
+		task_id = self.add_scheduled_task(
+			organization_uuid,
+			name=body["name"],
+			prompt=body.get("prompt", ""),
+			project_uuid=body.get("project_uuid"),
+			cron_expression=cron,
+			model=body.get("model"),
+		)
+
+		return {"trigger": self._public_task(self.scheduled_tasks[task_id])}
+
 	# ---------------------------------------------------------------- helpers
 
 	def _maybe_fail(self, method: str, path: str) -> None:
@@ -250,6 +345,12 @@ class FakeClaudeProjectsApi:
 			raise NotFoundError(f"No project {uuid}")
 
 		return self.projects[uuid]
+
+	def _find_task(self, task_id: str) -> dict:
+		if task_id not in self.scheduled_tasks:
+			raise NotFoundError(f"No scheduled task {task_id}")
+
+		return self.scheduled_tasks[task_id]
 
 	def _find_document(self, project_uuid: str, document_uuid: str) -> dict:
 		for document in self.documents.get(project_uuid, []):
@@ -265,6 +366,42 @@ class FakeClaudeProjectsApi:
 			# The real listing and create responses omit prompt_template (spike, 2026-08-06), so `instructions` parses as empty from either.
 			# Only the single-project fetch and the update response carry it.
 			public.pop("prompt_template", None)
+
+		return public
+
+	@staticmethod
+	def _public_task(task: dict) -> dict:
+		"""A trigger shaped the way the real API shapes one.
+
+		The omissions are the point: a paused task carries no `enabled` key at all and a manual one carries no `cron_expression`, so a client that defaults either field the obvious way is caught here rather than in production.
+		"""
+		public: dict[str, Any] = {
+			"id": task["id"],
+			"name": task["name"],
+			"created_at": task["created_at"],
+			"updated_at": task["updated_at"],
+			"job_config": {
+				"ccr": {
+					"title": task["name"],
+					"events": [{"data": {"type": "user", "message": {"role": "user", "content": task["prompt"]}}}],
+				}
+			},
+		}
+
+		if task["enabled"]:
+			public["enabled"] = True
+
+		if task["cron_expression"]:
+			public["cron_expression"] = task["cron_expression"]
+			public["next_run_at"] = "2026-08-10T00:05:23.848718590Z"
+		else:
+			public["next_run_at"] = "0001-01-01T00:00:00Z"
+
+		if task["model"]:
+			public["job_config"]["ccr"]["session_context"] = {"model": task["model"]}
+
+		if task["_project"]:
+			public["chat_project_id"] = chat_project_id(task["_project"])
 
 		return public
 
@@ -285,6 +422,11 @@ class FakeClaudeProjectsApi:
 	def _next_project_uuid(self) -> str:
 		self._sequence += 1
 		return f"project-{self._sequence:04d}"
+
+	def _next_task_id(self) -> str:
+		self._sequence += 1
+		# Prefixed like the real trigger ids, so nothing can quietly start treating one as a uuid.
+		return f"trig_{self._sequence:022d}"
 
 	def _stamp(self) -> str:
 		"""Monotonic timestamps, so 'newest' is well-defined in tests."""

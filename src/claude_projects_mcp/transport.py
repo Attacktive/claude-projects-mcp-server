@@ -20,7 +20,8 @@ from .errors import (
 )
 
 # The subset of curl_cffi's accepted methods this client ever sends.
-HttpMethod = Literal["GET", "POST", "PUT", "DELETE"]
+# PATCH is only used by the scheduled-task endpoints; projects update with PUT.
+HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 _MAX_BODY_CHARACTERS = 500
 

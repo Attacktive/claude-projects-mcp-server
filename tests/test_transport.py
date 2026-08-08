@@ -79,6 +79,21 @@ def test_post_sends_a_json_body(transport, httpserver):
 	assert result == {"uuid": "d1"}
 
 
+def test_patch_sends_a_partial_json_body(transport, httpserver):
+	"""The scheduled-task API updates with PATCH, which no other endpoint in this client uses."""
+	seen = {}
+
+	def record(request):
+		seen.update(request.get_json())
+		return Response(json.dumps({"trigger": {"id": "trig_1"}}), status=200, content_type="application/json")
+
+	httpserver.expect_request("/api/scheduled_tasks/trig_1", method="PATCH").respond_with_handler(record)
+	result = transport.request("PATCH", "/scheduled_tasks/trig_1", json_body={"enabled": False})
+
+	assert seen == {"enabled": False}
+	assert result == {"trigger": {"id": "trig_1"}}
+
+
 def _challenge_then(httpserver, path, payload, challenges=1, method="GET"):
 	"""Serve Cloudflare's challenge page `challenges` times, then the real answer."""
 	seen = []

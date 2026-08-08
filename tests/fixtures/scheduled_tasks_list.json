@@ -1,0 +1,173 @@
+{
+  "data": [
+    {
+      "id": "trig_00000000000000000002",
+      "name": "Weekly task",
+      "cron_expression": "0 0 * * 1",
+      "enabled": true,
+      "next_run_at": "2026-08-10T00:05:23.848718590Z",
+      "created_at": "2026-08-08T03:37:03.580029Z",
+      "updated_at": "2026-08-08T03:43:27.036112Z",
+      "job_config": {
+        "ccr": {
+          "tags": [
+            "cowork-remote",
+            "cowork-scheduled"
+          ],
+          "events": [
+            {
+              "data": {
+                "type": "user",
+                "session_id": "",
+                "message": {
+                  "role": "user",
+                  "content": "Placeholder prompt."
+                },
+                "parent_tool_use_id": null,
+                "uuid": "00000000-0000-4000-8000-000000000003"
+              }
+            }
+          ],
+          "session_context": {
+            "allowed_tools": "<replaced>",
+            "mcp_config": {
+              "mcpServers": {}
+            },
+            "custom_system_prompt": "<replaced: server-generated system prompt>",
+            "append_system_prompt": "<replaced>",
+            "disallowed_tools": "<replaced>",
+            "model": "claude-sonnet-5"
+          },
+          "environment_id": "env_011111111111111111111117",
+          "title": "Weekly task"
+        }
+      },
+      "mcp_connections": [
+        {
+          "connector_uuid": "00000000-0000-4000-8000-000000000004",
+          "name": "Claude_Code_Remote",
+          "url": "https://api.anthropic.com/v1/code/mcp/meta",
+          "transport_type": "http"
+        }
+      ],
+      "creator": {
+        "account_uuid": "00000000-0000-4000-8000-000000000002",
+        "display_name": "Account holder"
+      },
+      "created_via": "http_api",
+      "chat_project_id": "claude_proj_01111111114bZ6BZRUqUqZep"
+    },
+    {
+      "id": "trig_00000000000000000001",
+      "name": "Manual task",
+      "enabled": true,
+      "next_run_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-08-08T03:37:03.580029Z",
+      "updated_at": "2026-08-08T03:37:03.580029Z",
+      "job_config": {
+        "ccr": {
+          "title": "Manual task",
+          "events": [
+            {
+              "data": {
+                "type": "user",
+                "session_id": "",
+                "message": {
+                  "role": "user",
+                  "content": "Placeholder prompt."
+                },
+                "parent_tool_use_id": null,
+                "uuid": "00000000-0000-4000-8000-000000000003"
+              }
+            }
+          ],
+          "environment_id": "env_011111111111111111111117",
+          "session_context": {
+            "mcp_config": {
+              "mcpServers": {}
+            },
+            "append_system_prompt": "<replaced>",
+            "disallowed_tools": "<replaced>",
+            "allowed_tools": "<replaced>",
+            "custom_system_prompt": "<replaced: server-generated system prompt>",
+            "model": "claude-sonnet-5"
+          },
+          "tags": [
+            "cowork-remote",
+            "cowork-scheduled"
+          ]
+        }
+      },
+      "mcp_connections": [
+        {
+          "connector_uuid": "00000000-0000-4000-8000-000000000004",
+          "name": "Claude_Code_Remote",
+          "url": "https://api.anthropic.com/v1/code/mcp/meta",
+          "transport_type": "http"
+        }
+      ],
+      "creator": {
+        "account_uuid": "00000000-0000-4000-8000-000000000002",
+        "display_name": "Account holder"
+      },
+      "created_via": "http_api",
+      "chat_project_id": "claude_proj_01111111114bZ6BZRUqUqZep"
+    },
+    {
+      "id": "trig_00000000000000000003",
+      "name": "Paused task",
+      "cron_expression": "0 0 * * 1",
+      "next_run_at": "2026-08-10T00:05:23.848718590Z",
+      "created_at": "2026-08-08T03:37:03.580029Z",
+      "updated_at": "2026-08-08T03:43:27.036112Z",
+      "job_config": {
+        "ccr": {
+          "tags": [
+            "cowork-remote",
+            "cowork-scheduled"
+          ],
+          "events": [
+            {
+              "data": {
+                "type": "user",
+                "session_id": "",
+                "message": {
+                  "role": "user",
+                  "content": "Placeholder prompt."
+                },
+                "parent_tool_use_id": null,
+                "uuid": "00000000-0000-4000-8000-000000000003"
+              }
+            }
+          ],
+          "session_context": {
+            "allowed_tools": "<replaced>",
+            "mcp_config": {
+              "mcpServers": {}
+            },
+            "custom_system_prompt": "<replaced: server-generated system prompt>",
+            "append_system_prompt": "<replaced>",
+            "disallowed_tools": "<replaced>",
+            "model": "claude-sonnet-5"
+          },
+          "environment_id": "env_011111111111111111111117",
+          "title": "Paused task"
+        }
+      },
+      "mcp_connections": [
+        {
+          "connector_uuid": "00000000-0000-4000-8000-000000000004",
+          "name": "Claude_Code_Remote",
+          "url": "https://api.anthropic.com/v1/code/mcp/meta",
+          "transport_type": "http"
+        }
+      ],
+      "creator": {
+        "account_uuid": "00000000-0000-4000-8000-000000000002",
+        "display_name": "Account holder"
+      },
+      "created_via": "http_api",
+      "chat_project_id": "claude_proj_01111111114bZ6BZRUqUqZep"
+    }
+  ]
+}

@@ -47,7 +47,7 @@ async def call(server, tool, **arguments):
 
 
 class TestRegistration:
-	async def test_exposes_exactly_the_twelve_tools(self, server):
+	async def test_exposes_exactly_the_seventeen_tools(self, server):
 		tools = await server.list_tools()
 
 		assert {tool.name for tool in tools} == {
@@ -63,6 +63,11 @@ class TestRegistration:
 			"delete_document",
 			"pull_documents",
 			"push_documents",
+			"list_scheduled_tasks",
+			"get_scheduled_task",
+			"create_scheduled_task",
+			"update_scheduled_task",
+			"delete_scheduled_task",
 		}
 
 	async def test_every_tool_is_described(self, server):
@@ -70,13 +75,20 @@ class TestRegistration:
 			assert tool.description, f"{tool.name} has no description"
 
 	async def test_every_tool_that_needs_a_project_demands_one(self, server):
-		"""There is no default project, so nothing can act on the wrong one by omission."""
-		account_wide = {"list_projects", "create_project"}
+		"""There is no default project, so nothing can act on the wrong one by omission.
+
+		Scheduled tasks are addressed by their own id once they exist, so most of those tools never name a project at all; `list_scheduled_tasks` is the one place a project is optional, because leaving it out widens the search rather than picking a project on the caller's behalf.
+		"""
+		account_wide = {"list_projects", "create_project", "get_scheduled_task", "update_scheduled_task", "delete_scheduled_task"}
+		project_is_a_filter = {"list_scheduled_tasks"}
 
 		for tool in await server.list_tools():
 			required = tool.input_schema.get("required") or []
 			if tool.name in account_wide:
 				assert "project_id" not in tool.input_schema["properties"], tool.name
+			elif tool.name in project_is_a_filter:
+				assert "project_id" in tool.input_schema["properties"], tool.name
+				assert "project_id" not in required, tool.name
 			else:
 				assert "project_id" in required, tool.name
 

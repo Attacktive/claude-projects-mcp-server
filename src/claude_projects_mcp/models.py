@@ -7,8 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 from .errors import ApiError
+from .identifiers import project_uuid_from
 
 _CHAT_CAPABILITIES = frozenset({"chat", "claude_pro"})
+
+# What a scheduled task reports as its next run when there is no schedule to run on.
+_NEVER = "0001-01-01"
 
 
 def _require(raw: Any, key: str, kind: str) -> Any:
@@ -128,3 +132,97 @@ class Document:
 			return None
 
 		return len(self.content)
+
+
+def _prompt_of(ccr: Any) -> str | None:
+	"""The instruction a scheduled task will send, from inside the job config.
+
+	It sits four levels down in a replayed event log rather than in a field of its own, so every step is treated as optional: a task whose prompt cannot be found is still a task worth listing, and raising here would make the whole listing fail over one odd row.
+	"""
+	events = ccr.get("events") or []
+	if not events or not isinstance(events[0], dict):
+		return None
+
+	message = (events[0].get("data") or {}).get("message") or {}
+	content = message.get("content")
+
+	if isinstance(content, str):
+		return content
+
+	return None
+
+
+def _scheduled_timestamp(value: Any) -> str | None:
+	"""A next-run time, or None when the API means "never".
+
+	A manual task reports `0001-01-01T00:00:00Z` — Go's zero time — which would otherwise read as a real date two thousand years ago.
+	"""
+	if not isinstance(value, str) or not value or value.startswith(_NEVER):
+		return None
+
+	return value
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledTask:
+	"""A Cowork scheduled task, which the API calls a trigger."""
+
+	id: str
+	name: str
+	prompt: str | None = None
+	cron_expression: str | None = None
+	enabled: bool = False
+	next_run_at: str | None = None
+	created_at: str | None = None
+	updated_at: str | None = None
+	chat_project_id: str | None = None
+	model: str | None = None
+
+	@classmethod
+	def parse(cls, raw: Any) -> Self:
+		task_id = _require(raw, "id", "Scheduled task")
+		name = _require(raw, "name", "Scheduled task")
+
+		job_config = raw.get("job_config")
+		ccr = job_config.get("ccr") if isinstance(job_config, dict) else None
+		if not isinstance(ccr, dict):
+			ccr = {}
+
+		return cls(
+			id=task_id,
+			name=name,
+			prompt=_prompt_of(ccr),
+			# Absent means manual: a task with no schedule has no cron field rather than an empty one.
+			cron_expression=raw.get("cron_expression"),
+			# Absent means paused. The API omits this field entirely instead of sending false, so defaulting it to True would report every paused task as running.
+			enabled=bool(raw.get("enabled", False)),
+			next_run_at=_scheduled_timestamp(raw.get("next_run_at")),
+			created_at=raw.get("created_at"),
+			updated_at=raw.get("updated_at"),
+			chat_project_id=raw.get("chat_project_id"),
+			model=(ccr.get("session_context") or {}).get("model"),
+		)
+
+	@classmethod
+	def parse_trigger(cls, raw: Any) -> Self:
+		"""One task, from the `{trigger}` envelope every single-task response uses."""
+		return cls.parse(_require(raw, "trigger", "Scheduled task"))
+
+	@classmethod
+	def parse_list(cls, raw: Any) -> list[Self]:
+		"""The listing, which wraps its rows in `{data}` but carries no pagination."""
+		rows = _require(raw, "data", "Scheduled tasks")
+		return _parse_list(rows, "scheduled tasks", cls.parse)
+
+	@property
+	def is_manual(self) -> bool:
+		"""True when this task only ever runs because somebody asked it to."""
+		return self.cron_expression is None
+
+	@property
+	def project_uuid(self) -> str | None:
+		"""The project this task belongs to, decoded from its chat_project_id."""
+		if not self.chat_project_id:
+			return None
+
+		return project_uuid_from(self.chat_project_id)

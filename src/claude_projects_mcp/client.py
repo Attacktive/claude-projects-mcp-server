@@ -7,9 +7,11 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from .errors import AmbiguousDocError, ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, NotFoundError, RateLimitedError
-from .models import Document, Organization, Project
+from .identifiers import chat_project_id
+from .models import Document, Organization, Project, ScheduledTask
 from .transport import HttpMethod, Transport
 
 _UUID_LIKE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{4,}$")
@@ -61,6 +63,27 @@ class RenameResult:
 	backup_paths: list[str] = field(default_factory=list)
 
 
+@dataclass
+class ProjectScheduledTasks:
+	"""One project's scheduled tasks, alongside everything else in its organization.
+
+	Both halves are kept because the filter is computed rather than served: the API lists tasks per organization and names their project only through an encoded id.
+	Holding the unfiltered listing too is what lets a caller tell "this project has nothing scheduled" apart from "the encoding stopped matching", which would otherwise look identical.
+	"""
+
+	project_id: str
+	matched: list[ScheduledTask] = field(default_factory=list)
+	in_organization: list[ScheduledTask] = field(default_factory=list)
+
+	@property
+	def mapping_looks_broken(self) -> bool:
+		"""True when tasks exist nearby but none claim this project.
+
+		Not proof of a break — every task in the organization may genuinely belong elsewhere — which is why this only ever drives a warning, never an error.
+		"""
+		return not self.matched and bool(self.in_organization)
+
+
 class ClaudeProjectsClient:
 	def __init__(
 		self,
@@ -71,6 +94,7 @@ class ClaudeProjectsClient:
 		self._sleep = sleep
 		self._orgs: list[Organization] | None = None
 		self._project_organizations: dict[str, str] = {}
+		self._task_organizations: dict[str, str] = {}
 
 	# --------------------------------------------------------------- plumbing
 
@@ -341,6 +365,148 @@ class ClaudeProjectsClient:
 			self._request("DELETE", f"{self._documents_path(project_id)}/{document_uuid}")
 		except NotFoundError:
 			return False
+
+		return True
+
+	# -------------------------------------------------------- scheduled tasks
+
+	def _scheduled_tasks_path(self, organization_id: str) -> str:
+		return f"/organizations/{organization_id}/cowork/scheduled_tasks"
+
+	def _tasks_in(self, organization_id: str) -> list[ScheduledTask]:
+		"""Every scheduled task in an organization, remembering which organization each came from.
+
+		The listing ignores query parameters — three different spellings of a project filter returned identical bodies (2026-08-08) — so narrowing happens here rather than upstream.
+		"""
+		raw = self._request("GET", self._scheduled_tasks_path(organization_id))
+		tasks = ScheduledTask.parse_list(raw)
+		for task in tasks:
+			self._task_organizations[task.id] = organization_id
+
+		return tasks
+
+	def resolve_organization_for_task(self, task_id: str) -> str:
+		"""Which organization holds this task, searching and caching exactly as projects do."""
+		if task_id in self._task_organizations:
+			return self._task_organizations[task_id]
+
+		for organization in self.list_organizations():
+			self._tasks_in(organization.uuid)
+			if task_id in self._task_organizations:
+				return self._task_organizations[task_id]
+
+		raise NotFoundError(f"No scheduled task {task_id!r} in any organization on this account. Use list_scheduled_tasks to see what is there.")
+
+	def list_scheduled_tasks(self, organization_id: str | None = None) -> list[ScheduledTask]:
+		if organization_id:
+			return self._tasks_in(organization_id)
+
+		tasks: list[ScheduledTask] = []
+		for organization in self.list_organizations():
+			tasks.extend(self._tasks_in(organization.uuid))
+
+		return tasks
+
+	def scheduled_tasks_for_project(self, project_id: str) -> ProjectScheduledTasks:
+		"""The tasks belonging to one project, matched by the id the API reports them under."""
+		organization_id = self.resolve_organization_for_project(project_id)
+		in_organization = self._tasks_in(organization_id)
+		wanted = chat_project_id(project_id)
+
+		return ProjectScheduledTasks(
+			project_id=project_id,
+			matched=[task for task in in_organization if task.chat_project_id == wanted],
+			in_organization=in_organization,
+		)
+
+	def get_scheduled_task(self, task_id: str) -> ScheduledTask:
+		organization_id = self.resolve_organization_for_task(task_id)
+		raw = self._request("GET", f"{self._scheduled_tasks_path(organization_id)}/{task_id}")
+
+		return ScheduledTask.parse_trigger(raw)
+
+	def create_scheduled_task(
+		self,
+		project_id: str,
+		name: str,
+		prompt: str,
+		cron_expression: str | None = None,
+		model: str | None = None,
+	) -> ScheduledTask:
+		"""Create a task against a project.
+
+		Omitting `cron_expression` leaves the task manual-only, which is what the web UI calls a Manual frequency; the API expresses that by having no schedule at all rather than a special value.
+		"""
+		organization_id = self.resolve_organization_for_project(project_id)
+
+		payload: dict[str, Any] = {"name": name, "prompt": prompt, "project_uuid": project_id}
+		if cron_expression is not None:
+			payload["cron_expression"] = cron_expression
+
+		if model is not None:
+			payload["model"] = model
+
+		raw = self._request("POST", self._scheduled_tasks_path(organization_id), payload)
+		created = ScheduledTask.parse_trigger(raw)
+		self._task_organizations[created.id] = organization_id
+
+		return created
+
+	def update_scheduled_task(
+		self,
+		task_id: str,
+		name: str | None = None,
+		prompt: str | None = None,
+		cron_expression: str | None = None,
+		enabled: bool | None = None,
+		model: str | None = None,
+	) -> ScheduledTask:
+		"""Change a task in place, sending only the arguments given.
+
+		None means "leave it alone" throughout, which is why there is no way to clear a schedule here: `cron_expression=None` is indistinguishable from not passing it.
+		Pausing is what `enabled=False` is for, and it is the better answer anyway — it keeps the prompt.
+		"""
+		payload: dict[str, Any] = {}
+		if name is not None:
+			payload["name"] = name
+
+		if prompt is not None:
+			payload["prompt"] = prompt
+
+		if cron_expression is not None:
+			payload["cron_expression"] = cron_expression
+
+		if enabled is not None:
+			payload["enabled"] = enabled
+
+		if model is not None:
+			payload["model"] = model
+
+		if not payload:
+			raise ValueError("Nothing to update: pass at least one of name, prompt, cron_expression, enabled, or model.")
+
+		organization_id = self.resolve_organization_for_task(task_id)
+		raw = self._request("PATCH", f"{self._scheduled_tasks_path(organization_id)}/{task_id}", payload)
+
+		return ScheduledTask.parse_trigger(raw)
+
+	def delete_scheduled_task(self, task_id: str) -> bool:
+		"""True if this call removed it, False if it was already gone.
+
+		A teammate deleting it first reached the same end state, exactly as with documents.
+		"""
+		try:
+			organization_id = self.resolve_organization_for_task(task_id)
+		except NotFoundError:
+			return False
+
+		try:
+			self._request("DELETE", f"{self._scheduled_tasks_path(organization_id)}/{task_id}")
+		except NotFoundError:
+			return False
+		finally:
+			# The id is meaningless now, and a stale mapping would answer for whatever takes its place.
+			self._task_organizations.pop(task_id, None)
 
 		return True
 

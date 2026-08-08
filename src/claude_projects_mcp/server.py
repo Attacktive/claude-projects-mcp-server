@@ -1,7 +1,9 @@
-"""The MCP surface: twelve tools over claude.ai / Claude Cowork projects and their documents.
+"""The MCP surface: seventeen tools over claude.ai / Claude Cowork projects, their documents, and their scheduled tasks.
 
 `build_server` is the injection seam.
 It knows nothing about how it will be served, so adding a Streamable HTTP entrypoint later is a new `main`, not a refactor.
+
+The scheduled-task tools live in `scheduled.py` and are registered at the end of `_assemble`; they share none of this module's machinery, since nothing about them touches backups or file names.
 """
 
 from importlib import metadata
@@ -16,6 +18,7 @@ from .client import ClaudeProjectsClient, looks_like_uuid
 from .config import Settings
 from .errors import ClaudeProjectsError
 from .models import Document, Project
+from .scheduled import register as register_scheduled_tools
 from .sync import pull, push, summarise
 from .transport import CurlCffiTransport
 
@@ -28,7 +31,11 @@ so delete_project needs the project's name typed back and backs everything up fi
 
 For more than a couple of edits, prefer pull_documents to a folder, edit the files with normal
 tools, then push_documents back — it is far cheaper than moving whole documents through tool
-calls one at a time."""
+calls one at a time.
+
+Scheduled tasks run prompts against a project on a cron schedule. Those schedules are in UTC,
+not local time, and pausing a task with enabled=false is nearly always better than deleting it.
+Nothing here can start a run: setting the schedule is the whole job."""
 
 
 def _version() -> str:
@@ -349,6 +356,10 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			"results": [_result_dict(result) for result in results],
 			"summary": summarise(results),
 		}
+
+	# ------------------------------------------------------- scheduled tasks
+
+	register_scheduled_tools(server, client)
 
 	return server
 

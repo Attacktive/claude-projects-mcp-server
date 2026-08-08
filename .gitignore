@@ -1,4 +1,4 @@
-# Credentials — COWORK_SESSION_KEY is a live claude.ai account credential
+# Credentials — CLAUDE_PROJECTS_SESSION_KEY is a live claude.ai account credential
 .env
 .env.*
 !.env.example
@@ -21,3 +21,6 @@ htmlcov/
 
 # JetBrains IDE
 .idea/
+
+# Playwright MCP scratch output, written into the working directory
+.playwright-mcp/

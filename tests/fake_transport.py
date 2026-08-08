@@ -99,9 +99,12 @@ class FakeClaudeProjectsApi:
 		cron_expression: str | None = None,
 		enabled: bool = True,
 		model: str | None = None,
-		task_id: str | None = None,
 	) -> str:
-		task_id = task_id or self._next_task_id()
+		"""Put a task in the fake and hand back its id.
+
+		The id is always generated rather than accepted, like the real API's: nothing needs to choose one, and taking it as an argument only invited callers to invent ids that a real trigger could never have.
+		"""
+		task_id = self._next_task_id()
 		self.scheduled_tasks[task_id] = {
 			"id": task_id,
 			"name": name,

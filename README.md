@@ -107,6 +107,9 @@ Give documents a file extension: the web UI picks its renderer by name, so `note
 A result carries a `warning` key only when there is something to hear, and it comes first.
 The model is the only reader a tool result is guaranteed to have, so the tool descriptions and the server instructions tell it to relay any `warning` to the user verbatim — nothing else in the chain will.
 
+The session key is the only required setting; `CLAUDE_PROJECTS_BACKUP_DIRECTORY`, `CLAUDE_PROJECTS_BASE_URL`, and `CLAUDE_PROJECTS_IMPERSONATE` optionally override where backups land, which host is spoken to, and which browser fingerprint `curl_cffi` presents.
+Which organization owns a project is worked out by searching — one listing per organization per session, cached — so a project is reachable wherever on the account it lives, and nothing can be pointed at the wrong place.
+
 ### Capacity
 
 A project's knowledge has two lines:
@@ -114,14 +117,11 @@ A project's knowledge has two lines:
 - **Search threshold** (`project_knowledge_search_threshold`): past this line, Claude in the web UI retrieves from the knowledge instead of reading all of it, so documents can go unseen.
 - **Maximum capacity** (`max_knowledge_size`): past this line, the web UI refuses further uploads until content is removed or compacted.
 
-The API enforces neither line on writes, so `write_document` and `push_documents` enforce them server-side:
+The API enforces neither line on writes, so this server enforces them:
 
 - A write that would grow the project past a line is undone and refused, naming up to three candidate documents most worth compacting (duplicates first, then by size and age).
 - Passing `allow_search_mode=true` accepts crossing the search threshold (with a warning); nothing accepts exceeding the maximum capacity.
 - `list_documents` reports current knowledge capacity usage under the `knowledge` key.
-
-The session key is the only required setting; `CLAUDE_PROJECTS_BACKUP_DIRECTORY`, `CLAUDE_PROJECTS_BASE_URL`, and `CLAUDE_PROJECTS_IMPERSONATE` optionally override where backups land, which host is spoken to, and which browser fingerprint `curl_cffi` presents.
-Which organization owns a project is worked out by searching — one listing per organization per session, cached — so a project is reachable wherever on the account it lives, and nothing can be pointed at the wrong place.
 
 ## Safety
 

@@ -162,6 +162,16 @@ class TestListDocs:
 		assert "past its maximum" in result["warning"]
 		assert result["knowledge"]["size"] == 150
 
+	async def test_search_mode_alone_is_not_a_list_documents_warning(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.projects[PROJECT]["_max_knowledge_size"] = 200
+		api.add_document(PROJECT, "notes.md", "a" * 80)
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert result["knowledge"]["search_mode"] is True
+		assert "warning" not in result
+
 
 class TestReadDoc:
 	async def test_reads_by_name(self, api, server):
@@ -320,6 +330,32 @@ class TestWriteDoc:
 
 		assert result["action"] == "replaced"
 		assert api.content_of(PROJECT, "notes.md") == ["a" * 20]
+		assert "warning" not in result
+
+	async def test_502_on_kb_stats_succeeds_and_warns(self, api, client):
+		api.add_document(PROJECT, "notes.md", "old content")
+		api.fail_once("GET", r"/kb/stats$", ApiError("claude.ai returned HTTP 502.", status=502))
+
+		result = client.replace_document(PROJECT, "notes.md", "new longer content")
+
+		assert result.action == "replaced"
+		assert result.knowledge is None
+		assert api.content_of(PROJECT, "notes.md") == ["new longer content"]
+
+	async def test_write_crossing_threshold_refusal_candidate_ordering(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 100
+		api.add_document(PROJECT, "dup.md", "a" * 10)
+		api.add_document(PROJECT, "dup.md", "a" * 10)
+		api.add_document(PROJECT, "large.md", "b" * 50)
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "write_document", project_id=PROJECT, file_name="new.md", content="c" * 80)
+
+		message = str(exception_info.value)
+		dup_index = message.find("dup.md")
+		large_index = message.find("large.md")
+		assert dup_index != -1 and large_index != -1
+		assert dup_index < large_index
 
 	async def test_small_growing_write_in_project_already_in_search_mode(self, api, server):
 		api.projects[PROJECT]["_search_threshold"] = 50
@@ -332,13 +368,15 @@ class TestWriteDoc:
 
 	async def test_rollback_delete_fails_reports_done_with_warning(self, api, server):
 		api.projects[PROJECT]["_search_threshold"] = 50
-		api.add_document(PROJECT, "notes.md", "a" * 40)
-		# Fail the delete of the newly created document during rollback of refused write
+		existing_uuid = api.add_document(PROJECT, "notes.md", "a" * 40)
 		api.fail_once("DELETE", r"/docs/[^/]+$", ApiError("500", status=500))
 
 		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.md", content="a" * 60, overwrite=True)
 
-		assert "could not be undone" in result["warning"]
+		warning = result["warning"]
+		assert "could not be undone" in warning
+		assert existing_uuid in warning
+		assert result["uuid"] in warning
 		assert len(api.documents[PROJECT]) == 2
 
 	async def test_kb_stats_404_warns_capacity_not_checked(self, api, server):
@@ -507,6 +545,16 @@ class TestPushDocs:
 			await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path / "nope"))
 
 		assert "nope" in str(exception_info.value)
+
+	async def test_push_documents_lifts_refusal_into_warning(self, api, server, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
+
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path))
+
+		assert "warning" in result
+		assert "search threshold" in result["warning"]
 
 
 class TestProjectTools:

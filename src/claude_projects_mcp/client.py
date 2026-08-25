@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .capacity import candidates, judge, refusal
+from .capacity import Verdict, candidates, judge, refusal
 from .errors import AmbiguousDocError, ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, KnowledgeFullError, NotFoundError, RateLimitedError
 from .identifiers import chat_project_id
 from .models import Document, KnowledgeStats, Organization, Project, ScheduledTask
@@ -548,7 +548,7 @@ class ClaudeProjectsClient:
 	def _try_knowledge_stats(self, project_id: str) -> KnowledgeStats | None:
 		try:
 			return self.knowledge_stats(project_id)
-		except NotFoundError:
+		except ClaudeProjectsError:
 			return None
 
 	def save_document(
@@ -591,7 +591,7 @@ class ClaudeProjectsClient:
 		context: _SaveContext,
 		replacing: list[Document],
 		allow_search_mode: bool,
-		verdict: str,
+		verdict: Verdict,
 	) -> ReplaceResult:
 		replaced, failed = self._delete_documents(context.project_id, replacing)
 		actually_removed = sum(doc.estimated_token_count for doc in replacing if doc.uuid in replaced and doc.estimated_token_count is not None)
@@ -603,6 +603,7 @@ class ClaudeProjectsClient:
 			search_mode=final_size > context.stats.search_threshold,
 		)
 		entered_search_mode = (verdict == "search_mode") and allow_search_mode
+
 		return ReplaceResult(
 			uuid=context.created.uuid,
 			file_name=context.file_name,
@@ -625,7 +626,7 @@ class ClaudeProjectsClient:
 		context: _SaveContext,
 		added: int,
 		removed: int,
-		verdict: str,
+		verdict: Verdict,
 	) -> ReplaceResult:
 		try:
 			self.delete_document(context.project_id, context.created.uuid)
@@ -646,12 +647,17 @@ class ClaudeProjectsClient:
 				rollback_failed=True,
 			)
 
-		existing_docs = self.list_documents(context.project_id)
-		cands = candidates(existing_docs, excluding=context.file_name)
+		existing_documents = self.list_documents(context.project_id)
+		candidates_list = candidates(existing_documents, excluding=context.file_name)
 		projected = context.stats.size - removed
-		limit_val = context.stats.max_size if verdict == "over_max" else context.stats.search_threshold
-		msg = refusal(context.file_name, verdict, context.stats, projected, added, cands)
-		raise KnowledgeFullError(msg, file_name=context.file_name, verdict=verdict, projected=projected, limit=limit_val)
+
+		if verdict == "over_max":
+			limit_value = context.stats.max_size
+		else:
+			limit_value = context.stats.search_threshold
+
+		message = refusal(context.file_name, verdict, context.stats, projected, added, candidates_list)
+		raise KnowledgeFullError(message, file_name=context.file_name, verdict=verdict, projected=projected, limit=limit_value)
 
 	def replace_document(
 		self,
@@ -662,11 +668,21 @@ class ClaudeProjectsClient:
 		allow_search_mode: bool = False,
 		backup: Callable[[str, str], str] | None = None,
 	) -> ReplaceResult:
-		"""Save `content` under `file_name`, replacing any document already using it."""
+		"""Save `content` under `file_name`, replacing any document already using it.
+
+		The API has no update endpoint, so this creates the replacement first and only then deletes what it replaced.
+		That ordering is the whole safety argument: no path deletes the original until the new content exists remotely and the old content has been backed up locally.
+
+		`backup` receives (file_name, old_content) and returns where it was saved.
+		If it raises before the create, nothing is mutated.
+		"""
 		existing = self.find_documents_by_name(project_id, file_name)
 
 		if expected_uuid is not None:
-			actual = existing[0].uuid if existing else None
+			actual = None
+			if existing:
+				actual = existing[0].uuid
+
 			if actual != expected_uuid:
 				raise ConcurrentEditError(
 					f"{file_name!r} changed since it was read (expected {expected_uuid}, found {actual or 'no document at all'}). Somebody else saved in the meantime; re-read it before writing.",

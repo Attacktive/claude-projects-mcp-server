@@ -123,9 +123,9 @@ def push(
 	matching_paths = [path for path in sorted(source.glob(pattern)) if path.is_file()]
 	results = []
 	for index, path in enumerate(matching_paths):
-		res = _push_one(client, project_id, path, remote, options)
-		results.append(res)
-		if res.status == "refused_full":
+		result = _push_one(client, project_id, path, remote, options)
+		results.append(result)
+		if result.status in ("refused_full", "written_over_capacity"):
 			for remaining in matching_paths[index + 1 :]:
 				results.append(FileResult(remaining.name, "skipped_full", local_path=str(remaining), detail="not attempted: the project has no room"))
 			break
@@ -165,13 +165,13 @@ def _push_new(client: ClaudeProjectsClient, project_id: str, path: Path, name: s
 	if options.dry_run:
 		return FileResult(name, "created", local_path=str(path), detail="dry run")
 
-	res = client.save_document(project_id, name, content, replacing=[], allow_search_mode=options.allow_search_mode)
-	if res.rollback_failed:
+	result = client.save_document(project_id, name, content, replacing=[], allow_search_mode=options.allow_search_mode)
+	if result.rollback_failed:
 		return FileResult(
 			name,
-			"refused_full",
+			"written_over_capacity",
 			local_path=str(path),
-			detail=f"write took the project past capacity and could not be undone: deleting new document {res.uuid} failed.",
+			detail=f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed.",
 		)
 
 	return FileResult(name, "created", local_path=str(path))
@@ -207,9 +207,10 @@ def _push_existing(
 	if result.rollback_failed:
 		return FileResult(
 			name,
-			"refused_full",
+			"written_over_capacity",
 			local_path=str(path),
-			detail=f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed.",
+			detail=f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed. The previous document {existing.uuid} was left in place.",
+			backup_path=result.backup_path,
 		)
 
 	detail = None

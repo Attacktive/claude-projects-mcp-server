@@ -51,7 +51,7 @@ def candidates(documents: list[Document], excluding: str) -> list[Candidate]:
 		if file_name == excluding:
 			continue
 
-		sorted_copies = sorted(copies, key=lambda doc: doc.created_at or "", reverse=True)
+		sorted_copies = sorted(copies, key=lambda document: document.created_at or "", reverse=True)
 		newest = sorted_copies[0]
 		older_copies = sorted_copies[1:]
 
@@ -64,6 +64,7 @@ def candidates(documents: list[Document], excluding: str) -> list[Candidate]:
 				duplicate=False,
 			)
 		)
+
 		for copy in older_copies:
 			all_candidates.append(
 				Candidate(
@@ -76,11 +77,12 @@ def candidates(documents: list[Document], excluding: str) -> list[Candidate]:
 			)
 
 	# Timsort is stable: sort secondary criterion (oldest created_at first) then primary criteria descending.
-	all_candidates.sort(key=lambda c: c.created_at or "")
+	all_candidates.sort(key=lambda candidate: candidate.created_at or "")
 	all_candidates.sort(
-		key=lambda c: (c.duplicate, c.estimated_token_count if c.estimated_token_count is not None else 0),
+		key=lambda candidate: (candidate.duplicate, candidate.estimated_token_count if candidate.estimated_token_count is not None else 0),
 		reverse=True,
 	)
+
 	return all_candidates[:3]
 
 
@@ -93,20 +95,24 @@ def refusal(
 	candidates_list: list[Candidate],
 ) -> str:
 	"""Format the refusal message for the model when a write exceeds search threshold or maximum size."""
-	is_max = verdict == "over_max"
-	line_name = "its maximum" if is_max else "its search threshold"
-	line_val = stats.max_size if is_max else stats.search_threshold
-	over_amount = projected - line_val
+	is_maximum = verdict == "over_max"
+	if is_maximum:
+		line_name = "its maximum"
+		limit_value = stats.max_size
+	else:
+		line_name = "its search threshold"
+		limit_value = stats.search_threshold
 
-	prev_size = stats.size - added
-	was_already_past = prev_size > line_val
+	over_amount = projected - limit_value
+	previous_size = stats.size - added
+	was_already_past = previous_size > limit_value
 
 	if was_already_past:
-		first_sentence = f"The project is already past {line_name} ({prev_size:,} of {line_val:,} tokens), and writing {file_name!r} would add {added:,} more."
+		first_sentence = f"The project is already past {line_name} ({previous_size:,} of {limit_value:,} tokens), and writing {file_name!r} would add {added:,} more."
 	else:
-		first_sentence = f"Writing {file_name!r} ({added:,} tokens) would push the project past {line_name}: {projected:,} of {line_val:,} tokens, {over_amount:,} over."
+		first_sentence = f"Writing {file_name!r} ({added:,} tokens) would push the project past {line_name}: {projected:,} of {limit_value:,} tokens, {over_amount:,} over."
 
-	if is_max:
+	if is_maximum:
 		second_sentence = "Past that line the web UI refuses to add anything to the project knowledge until something is removed."
 	else:
 		second_sentence = "Past that line Claude in the web UI retrieves from the project knowledge instead of reading all of it, so a document can go unseen."
@@ -116,19 +122,24 @@ def refusal(
 	if not candidates_list:
 		candidates_sentence = "There is nothing else in the project to compact; shrink this content."
 	else:
-		formatted_candidates = [_format_candidate(c) for c in candidates_list]
+		formatted_candidates = [_format_candidate(candidate) for candidate in candidates_list]
 		candidates_sentence = f"To make room, shrink this content, or compact one of these with write_document overwrite=true: {'; '.join(formatted_candidates)}."
 
 	parts = [first_sentence, second_sentence, third_sentence, candidates_sentence]
-	if not is_max:
+	if not is_maximum:
 		parts.append("To accept search mode instead, pass allow_search_mode=true.")
 
 	return " ".join(parts)
 
 
 def _format_candidate(candidate: Candidate) -> str:
-	tokens = candidate.estimated_token_count if candidate.estimated_token_count is not None else 0
+	if candidate.estimated_token_count is not None:
+		tokens = candidate.estimated_token_count
+	else:
+		tokens = 0
+
 	date_part = (candidate.created_at or "")[:10]
 	if candidate.duplicate:
 		return f"{candidate.file_name!r} ({tokens:,} tokens, {date_part}, an older duplicate that the next overwrite of that name removes anyway)"
+
 	return f"{candidate.file_name!r} ({tokens:,} tokens, last rewritten {date_part})"

@@ -79,9 +79,21 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 	backups = BackupStore(settings.backup_directory)
 	server = MCPServer(name="claude-projects", version=_version(), instructions=_INSTRUCTIONS)
 
-	_register_projects(server, client, backups)
-	_register_documents(server, client, backups)
-	_register_sync(server, client, backups)
+	_register_list_projects(server, client)
+	_register_get_project(server, client)
+	_register_create_project(server, client)
+	_register_update_project(server, client)
+	_register_delete_project(server, client, backups)
+
+	_register_list_documents(server, client)
+	_register_read_document(server, client)
+	_register_write_document(server, client, backups)
+	_register_rename_document(server, client, backups)
+	_register_delete_document(server, client, backups)
+
+	_register_pull_documents(server, client)
+	_register_push_documents(server, client, backups)
+
 	register_scheduled_tools(server, client)
 
 	return server
@@ -94,7 +106,7 @@ def _backup_for(backups: BackupStore, project_id: str):
 	return save
 
 
-def _register_projects(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
+def _register_list_projects(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
 		description="List the claude.ai / Claude Cowork projects on this account, each tagged with the organization that owns it. Use this to find a project uuid.",
@@ -117,6 +129,8 @@ def _register_projects(server: MCPServer, client: ClaudeProjectsClient, backups:
 			]
 		}
 
+
+def _register_get_project(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
 		description="Read one project: its name, description, and instructions. Only this tool returns the instructions — list_projects does not carry them.",
@@ -125,6 +139,8 @@ def _register_projects(server: MCPServer, client: ClaudeProjectsClient, backups:
 		with translated():
 			return _project_dict(client.get_project(project_id))
 
+
+def _register_create_project(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
 		description="Create a project. organization_id is needed only when the account belongs to several organizations, and the error will name them if so. A private project is visible to you alone; a normal one is visible to the whole organization.",
@@ -147,6 +163,8 @@ def _register_projects(server: MCPServer, client: ClaudeProjectsClient, backups:
 				)
 			)
 
+
+def _register_update_project(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
 		description="Change a project's name, description, or instructions. Only the fields you pass are touched; the rest keep their current values. Pass an empty string to clear one.",
@@ -170,6 +188,8 @@ def _register_projects(server: MCPServer, client: ClaudeProjectsClient, backups:
 				)
 			)
 
+
+def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
 		description="Delete a project and every document in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every document is copied to the local backup directory first; if that fails, nothing is deleted.",
@@ -193,7 +213,7 @@ def _register_projects(server: MCPServer, client: ClaudeProjectsClient, backups:
 		}
 
 
-def _register_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
+def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
 		description="List the documents in a project. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
@@ -243,6 +263,8 @@ def _register_documents(server: MCPServer, client: ClaudeProjectsClient, backups
 
 		return with_warning(body, warning)
 
+
+def _register_read_document(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
 		description="Read one document, by file name or uuid. If several documents share the name, the newest is returned and `warning` names the others; relay any `warning` to the user verbatim.",
@@ -265,6 +287,8 @@ def _register_documents(server: MCPServer, client: ClaudeProjectsClient, backups
 			warning,
 		)
 
+
+def _register_write_document(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
 		description="Create a document, or replace one with overwrite=true. The previous content is backed up locally before any replacement. Pass expected_uuid (from read_document) to refuse the write if a teammate has saved since you read it. Refused when the write would grow the project past its search threshold or its maximum, naming the documents most worth compacting; allow_search_mode=true accepts the threshold, never the maximum. Relay any `warning` in the result to the user verbatim — it flags a leftover copy or a file name with no extension.",
@@ -331,6 +355,8 @@ def _register_documents(server: MCPServer, client: ClaudeProjectsClient, backups
 			_joined(leftover, _extension_warning(result.file_name), capacity_warn),
 		)
 
+
+def _register_rename_document(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
 		description="Rename a document, by uuid or by an unambiguous file name. The content is re-created under the new name before the original is deleted, with local backups first, so nothing is lost midway. A new name already in use is refused unless overwrite=true, which replaces its holder (backed up first). Relay any `warning` in the result to the user verbatim.",
@@ -361,6 +387,8 @@ def _register_documents(server: MCPServer, client: ClaudeProjectsClient, backups
 			_joined(leftover, _extension_warning(result.new_file_name)),
 		)
 
+
+def _register_delete_document(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
 		description="Delete a document, by uuid or by an unambiguous file name. The content is backed up locally first. A name shared by several documents is refused: pass the uuid to say which one.",
@@ -380,7 +408,7 @@ def _register_documents(server: MCPServer, client: ClaudeProjectsClient, backups
 		}
 
 
-def _register_sync(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
+def _register_pull_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=False),
 		description="Copy the project's documents into a local folder. Local files that differ are kept, not overwritten, unless overwrite_local=true.",
@@ -398,6 +426,8 @@ def _register_sync(server: MCPServer, client: ClaudeProjectsClient, backups: Bac
 			"summary": summarise(results),
 		}
 
+
+def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
 		description="Upload a local folder's files into the project. Unchanged files are skipped, differing ones need overwrite=true, and remote documents missing locally are never deleted. Use dry_run=true to preview. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",

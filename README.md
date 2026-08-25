@@ -110,10 +110,12 @@ The model is the only reader a tool result is guaranteed to have, so the tool de
 ### Capacity
 
 A project's knowledge has two lines:
+
 - **Search threshold** (`project_knowledge_search_threshold`): past this line, Claude in the web UI retrieves from the knowledge instead of reading all of it, so documents can go unseen.
 - **Maximum capacity** (`max_knowledge_size`): past this line, the web UI refuses further uploads until content is removed or compacted.
 
 The API enforces neither line on writes, so `write_document` and `push_documents` enforce them server-side:
+
 - A write that would grow the project past a line is undone and refused, naming up to three candidate documents most worth compacting (duplicates first, then by size and age).
 - Passing `allow_search_mode=true` accepts crossing the search threshold (with a warning); nothing accepts exceeding the maximum capacity.
 - `list_documents` reports current knowledge capacity usage under the `knowledge` key.

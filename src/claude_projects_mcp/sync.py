@@ -25,6 +25,14 @@ class FileResult:
 	backup_path: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PushOptions:
+	overwrite: bool = False
+	dry_run: bool = False
+	allow_search_mode: bool = False
+	backup: Callable[[str, str], str] | None = None
+
+
 def summarise(results: list[FileResult]) -> dict[str, int]:
 	counts: dict[str, int] = {}
 	for result in results:
@@ -110,11 +118,12 @@ def push(
 		raise FileNotFoundError(f"No such directory: {source}")
 
 	remote = _index_by_name(client.list_documents(project_id))
+	options = PushOptions(overwrite=overwrite, dry_run=dry_run, allow_search_mode=allow_search_mode, backup=backup)
 
 	matching_paths = [path for path in sorted(source.glob(pattern)) if path.is_file()]
 	results = []
 	for index, path in enumerate(matching_paths):
-		res = _push_one(client, project_id, path, remote, overwrite, dry_run, allow_search_mode, backup)
+		res = _push_one(client, project_id, path, remote, options)
 		results.append(res)
 		if res.status == "refused_full":
 			for remaining in matching_paths[index + 1 :]:
@@ -129,10 +138,7 @@ def _push_one(
 	project_id: str,
 	path: Path,
 	remote: dict[str, Document],
-	overwrite: bool,
-	dry_run: bool,
-	allow_search_mode: bool,
-	backup: Callable[[str, str], str] | None,
+	options: PushOptions,
 ) -> FileResult:
 	name = path.name
 	try:
@@ -146,20 +152,20 @@ def _push_one(
 		existing = remote.get(name)
 
 		if existing is None:
-			return _push_new(client, project_id, path, name, content, dry_run, allow_search_mode)
+			return _push_new(client, project_id, path, name, content, options)
 
-		return _push_existing(client, project_id, path, name, content, existing, overwrite, dry_run, allow_search_mode, backup)
+		return _push_existing(client, project_id, path, name, content, existing, options)
 	except KnowledgeFullError as exception:
 		return FileResult(name, "refused_full", local_path=str(path), detail=str(exception))
 	except (ClaudeProjectsError, OSError) as exception:
 		return FileResult(name, "error", local_path=str(path), detail=str(exception))
 
 
-def _push_new(client: ClaudeProjectsClient, project_id: str, path: Path, name: str, content: str, dry_run: bool, allow_search_mode: bool) -> FileResult:
-	if dry_run:
+def _push_new(client: ClaudeProjectsClient, project_id: str, path: Path, name: str, content: str, options: PushOptions) -> FileResult:
+	if options.dry_run:
 		return FileResult(name, "created", local_path=str(path), detail="dry run")
 
-	res = client.save_document(project_id, name, content, replacing=[], allow_search_mode=allow_search_mode)
+	res = client.save_document(project_id, name, content, replacing=[], allow_search_mode=options.allow_search_mode)
 	if res.rollback_failed:
 		return FileResult(
 			name,
@@ -178,10 +184,7 @@ def _push_existing(
 	name: str,
 	content: str,
 	existing: Document,
-	overwrite: bool,
-	dry_run: bool,
-	allow_search_mode: bool,
-	backup: Callable[[str, str], str] | None,
+	options: PushOptions,
 ) -> FileResult:
 	if existing.is_stub:
 		existing = client.get_document(project_id, existing.uuid)
@@ -189,7 +192,7 @@ def _push_existing(
 	if existing.content == content:
 		return FileResult(name, "unchanged", local_path=str(path))
 
-	if not overwrite:
+	if not options.overwrite:
 		return FileResult(
 			name,
 			"skipped_exists",
@@ -197,10 +200,10 @@ def _push_existing(
 			detail="remote document differs; pass overwrite to replace it",
 		)
 
-	if dry_run:
+	if options.dry_run:
 		return FileResult(name, "replaced", local_path=str(path), detail="dry run")
 
-	result = client.replace_document(project_id, name, content, allow_search_mode=allow_search_mode, backup=backup)
+	result = client.replace_document(project_id, name, content, allow_search_mode=options.allow_search_mode, backup=options.backup)
 	if result.rollback_failed:
 		return FileResult(
 			name,

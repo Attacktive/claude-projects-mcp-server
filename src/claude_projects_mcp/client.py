@@ -33,6 +33,15 @@ def looks_like_uuid(value: str) -> bool:
 	return bool(_UUID_LIKE.match(value.strip()))
 
 
+@dataclass(frozen=True, slots=True)
+class _SaveContext:
+	project_id: str
+	file_name: str
+	created: Document
+	stats: KnowledgeStats
+	backup_path: str | None = None
+
+
 @dataclass
 class ReplaceResult:
 	"""What a save actually did, including the parts that did not go to plan."""
@@ -571,47 +580,35 @@ class ClaudeProjectsClient:
 		removed = sum(doc.estimated_token_count for doc in replacing if doc.estimated_token_count is not None)
 		verdict = judge(stats, added, removed)
 
+		context = _SaveContext(project_id, file_name, created, stats, backup_path)
 		if verdict == "fits" or (verdict == "search_mode" and allow_search_mode):
-			return self._admit_save(project_id, file_name, created, replacing, stats, allow_search_mode, verdict, backup_path)
+			return self._admit_save(context, replacing, allow_search_mode, verdict)
 
-		return self._rollback_or_raise(
-			project_id=project_id,
-			file_name=file_name,
-			created=created,
-			stats=stats,
-			added=added,
-			removed=removed,
-			verdict=verdict,
-			backup_path=backup_path,
-		)
+		return self._rollback_or_raise(context, added, removed, verdict)
 
 	def _admit_save(
 		self,
-		project_id: str,
-		file_name: str,
-		created: Document,
+		context: _SaveContext,
 		replacing: list[Document],
-		stats: KnowledgeStats,
 		allow_search_mode: bool,
 		verdict: str,
-		backup_path: str | None,
 	) -> ReplaceResult:
-		replaced, failed = self._delete_documents(project_id, replacing)
+		replaced, failed = self._delete_documents(context.project_id, replacing)
 		actually_removed = sum(doc.estimated_token_count for doc in replacing if doc.uuid in replaced and doc.estimated_token_count is not None)
-		final_size = stats.size - actually_removed
+		final_size = context.stats.size - actually_removed
 		projected_stats = KnowledgeStats(
 			size=final_size,
-			max_size=stats.max_size,
-			search_threshold=stats.search_threshold,
-			search_mode=final_size > stats.search_threshold,
+			max_size=context.stats.max_size,
+			search_threshold=context.stats.search_threshold,
+			search_mode=final_size > context.stats.search_threshold,
 		)
 		entered_search_mode = (verdict == "search_mode") and allow_search_mode
 		return ReplaceResult(
-			uuid=created.uuid,
-			file_name=file_name,
+			uuid=context.created.uuid,
+			file_name=context.file_name,
 			replaced_uuids=replaced,
 			failed_delete_uuids=failed,
-			backup_path=backup_path,
+			backup_path=context.backup_path,
 			knowledge=projected_stats,
 			entered_search_mode=entered_search_mode,
 		)
@@ -625,40 +622,36 @@ class ClaudeProjectsClient:
 
 	def _rollback_or_raise(
 		self,
-		project_id: str,
-		file_name: str,
-		created: Document,
-		stats: KnowledgeStats,
+		context: _SaveContext,
 		added: int,
 		removed: int,
 		verdict: str,
-		backup_path: str | None,
 	) -> ReplaceResult:
 		try:
-			self.delete_document(project_id, created.uuid)
+			self.delete_document(context.project_id, context.created.uuid)
 		except Exception:
 			projected_stats = KnowledgeStats(
-				size=stats.size,
-				max_size=stats.max_size,
-				search_threshold=stats.search_threshold,
-				search_mode=stats.size > stats.search_threshold,
+				size=context.stats.size,
+				max_size=context.stats.max_size,
+				search_threshold=context.stats.search_threshold,
+				search_mode=context.stats.size > context.stats.search_threshold,
 			)
 			return ReplaceResult(
-				uuid=created.uuid,
-				file_name=file_name,
+				uuid=context.created.uuid,
+				file_name=context.file_name,
 				replaced_uuids=[],
 				failed_delete_uuids=[],
-				backup_path=backup_path,
+				backup_path=context.backup_path,
 				knowledge=projected_stats,
 				rollback_failed=True,
 			)
 
-		existing_docs = self.list_documents(project_id)
-		cands = candidates(existing_docs, excluding=file_name)
-		projected = stats.size - removed
-		limit_val = stats.max_size if verdict == "over_max" else stats.search_threshold
-		msg = refusal(file_name, verdict, stats, projected, added, cands)
-		raise KnowledgeFullError(msg, file_name=file_name, verdict=verdict, projected=projected, limit=limit_val)
+		existing_docs = self.list_documents(context.project_id)
+		cands = candidates(existing_docs, excluding=context.file_name)
+		projected = context.stats.size - removed
+		limit_val = context.stats.max_size if verdict == "over_max" else context.stats.search_threshold
+		msg = refusal(context.file_name, verdict, context.stats, projected, added, cands)
+		raise KnowledgeFullError(msg, file_name=context.file_name, verdict=verdict, projected=projected, limit=limit_val)
 
 	def replace_document(
 		self,

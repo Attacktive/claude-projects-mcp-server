@@ -60,10 +60,12 @@ CLAUDE_PROJECTS_SESSION_KEY=sk-ant-sid02-...
 Register with Claude Code straight from this repository — no clone needed:
 
 ```bash
-claude mcp add claude-projects -- uvx --env-file /path/to/.env --from 'git+https://github.com/Attacktive/claude-projects-mcp-server@main' claude-projects-mcp
+claude mcp add claude-projects -- uvx --refresh --env-file /path/to/.env --from 'git+https://github.com/Attacktive/claude-projects-mcp-server@main' claude-projects-mcp
 ```
 
-`uv` caches the commit it resolves, so a later push to `main` is not picked up automatically; run `uv cache clean claude-projects-mcp-server` to update, or pin a tag instead of `@main` to move only on releases.
+`--refresh` makes `uv` re-resolve `main` every time the server starts, so relaunching Claude Code picks up whatever has been pushed since — at the cost of a git fetch on each launch, and of needing the network for it.
+Without it, `uv` keeps the commit it first resolved until `uv cache clean claude-projects-mcp-server` is run.
+To move only on releases instead, drop `--refresh` and pin a tag in place of `@main`.
 
 ### From a local checkout (development)
 

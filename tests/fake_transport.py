@@ -199,8 +199,8 @@ class FakeClaudeProjectsApi:
 			if search_threshold is None or max_knowledge_size is None:
 				raise NotFoundError(f"No kb stats for project {match['project']}")
 
-			docs = self.documents.get(match["project"], [])
-			knowledge_size = sum(len(doc["content"]) for doc in docs if doc.get("content") is not None)
+			documents = self.documents.get(match["project"], [])
+			knowledge_size = sum(len(document["content"]) for document in documents if document.get("content") is not None)
 			use_search = knowledge_size > search_threshold
 			return {
 				"knowledge_size": knowledge_size,

@@ -109,8 +109,8 @@ def test_kb_stats_matches_document_token_counts(client, project):
 		assert stats.search_threshold > 0
 		assert isinstance(stats.search_mode, bool)
 
-		docs = client.list_documents(project)
-		total_tokens = sum(doc.estimated_token_count for doc in docs if doc.estimated_token_count is not None)
+		documents = client.list_documents(project)
+		total_tokens = sum(document.estimated_token_count for document in documents if document.estimated_token_count is not None)
 		assert stats.size == total_tokens
 	finally:
 		client.delete_document(project, created.uuid)

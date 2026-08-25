@@ -577,7 +577,7 @@ class ClaudeProjectsClient:
 			)
 
 		added = created.estimated_token_count
-		removed = sum(doc.estimated_token_count for doc in replacing if doc.estimated_token_count is not None)
+		removed = sum(document.estimated_token_count for document in replacing if document.estimated_token_count is not None)
 		verdict = judge(stats, added, removed)
 
 		context = _SaveContext(project_id, file_name, created, stats, backup_path)
@@ -594,7 +594,7 @@ class ClaudeProjectsClient:
 		verdict: Verdict,
 	) -> ReplaceResult:
 		replaced, failed = self._delete_documents(context.project_id, replacing)
-		actually_removed = sum(doc.estimated_token_count for doc in replacing if doc.uuid in replaced and doc.estimated_token_count is not None)
+		actually_removed = sum(document.estimated_token_count for document in replacing if document.uuid in replaced and document.estimated_token_count is not None)
 		final_size = context.stats.size - actually_removed
 		projected_stats = KnowledgeStats(
 			size=final_size,

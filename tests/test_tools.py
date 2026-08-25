@@ -82,6 +82,17 @@ class TestRegistration:
 		rename_annotations = tools["rename_document"].annotations
 		assert rename_annotations is not None and rename_annotations.destructive_hint is False, "the destructive path is opt-in and backed up, like write_document's"
 
+	async def test_every_tool_that_can_warn_asks_for_the_warning_to_be_relayed(self, server):
+		"""The model is the only reader a tool result is guaranteed to have, so the description has to say what to do with a warning."""
+		can_warn = {"read_document", "write_document", "rename_document", "list_scheduled_tasks", "create_scheduled_task", "update_scheduled_task", "delete_scheduled_task"}
+		tools = {tool.name: tool for tool in await server.list_tools()}
+
+		for name in can_warn:
+			assert "relay" in tools[name].description.lower(), name
+
+	async def test_the_server_instructions_ask_for_warnings_to_be_relayed(self, server):
+		assert "warning" in server.instructions and "verbatim" in server.instructions
+
 
 class TestProjectResolution:
 	async def test_the_named_project_is_the_one_acted_on(self, api, server):
@@ -176,7 +187,7 @@ class TestReadDoc:
 
 		result = await call(server, "read_document", project_id=PROJECT, document="notes.md")
 
-		assert result["warning"] is None
+		assert "warning" not in result
 
 
 class TestWriteDoc:
@@ -185,7 +196,7 @@ class TestWriteDoc:
 
 		assert result["action"] == "created"
 		assert api.content_of(PROJECT, "notes.md") == ["hello"]
-		assert result["warning"] is None
+		assert "warning" not in result
 
 	async def test_a_name_without_an_extension_gets_a_warning(self, api, server):
 		"""The web UI renders by extension, so an extension-less name silently comes out as plain text — invisible from a tool call, where nothing looks like a file."""
@@ -200,6 +211,12 @@ class TestWriteDoc:
 
 		assert "extension" in result["warning"]
 		assert "'notes.md'" in result["warning"], "the suggestion must not double the period"
+
+	async def test_a_warning_leads_the_result(self, api, server):
+		"""First is where it gets read — after the success fields, everything already looks fine."""
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes", content="# hello")
+
+		assert next(iter(result)) == "warning"
 
 	async def test_refuses_to_replace_without_overwrite(self, api, server):
 		api.add_document(PROJECT, "notes.md", "precious")
@@ -249,7 +266,7 @@ class TestRenameDocument:
 		assert api.content_of(PROJECT, "plan.md") == ["hello"]
 		assert result["old_uuid"] == uuid
 		assert result["new_file_name"] == "plan.md"
-		assert result["warning"] is None
+		assert "warning" not in result
 
 	async def test_a_new_name_without_an_extension_gets_a_warning(self, api, server):
 		api.add_document(PROJECT, "notes.md", "hello")

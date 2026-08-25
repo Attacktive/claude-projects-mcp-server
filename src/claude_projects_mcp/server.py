@@ -18,6 +18,7 @@ from .client import ClaudeProjectsClient, looks_like_uuid
 from .config import Settings
 from .errors import ClaudeProjectsError
 from .models import Document, Project
+from .results import with_warning
 from .scheduled import register as register_scheduled_tools
 from .sync import pull, push, summarise
 from .transport import CurlCffiTransport
@@ -35,7 +36,11 @@ calls one at a time.
 
 Scheduled tasks run prompts against a project on a cron schedule. Those schedules are in UTC,
 not local time, and pausing a task with enabled=false is nearly always better than deleting it.
-Nothing here can start a run: setting the schedule is the whole job."""
+Nothing here can start a run: setting the schedule is the whole job.
+
+A result that carries a `warning` key is saying something the user needs to hear — a duplicate
+name, a leftover copy, a file name with no extension. The key is only present when there is
+something to say; relay it to the user verbatim rather than summarising past it."""
 
 
 def _version() -> str:
@@ -204,7 +209,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
-		description="Read one document, by file name or uuid. If several documents share the name, the newest is returned and `warning` names the others.",
+		description="Read one document, by file name or uuid. If several documents share the name, the newest is returned and `warning` names the others; relay any `warning` to the user verbatim.",
 	)
 	def read_document(project_id: str, document: str) -> dict:
 		with translated():
@@ -213,19 +218,21 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			if not looks_like_uuid(document):
 				warning = _duplicate_warning(client.find_documents_by_name(project_id, document), found)
 
-		return {
-			"uuid": found.uuid,
-			"file_name": found.file_name,
-			"content": found.content,
-			"created_at": found.created_at,
-			"warning": warning,
-		}
+		return with_warning(
+			{
+				"uuid": found.uuid,
+				"file_name": found.file_name,
+				"content": found.content,
+				"created_at": found.created_at,
+			},
+			warning,
+		)
 
 	# ---------------------------------------------------------------- writing
 
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Create a document, or replace one with overwrite=true. The previous content is backed up locally before any replacement. Pass expected_uuid (from read_document) to refuse the write if a teammate has saved since you read it.",
+		description="Create a document, or replace one with overwrite=true. The previous content is backed up locally before any replacement. Pass expected_uuid (from read_document) to refuse the write if a teammate has saved since you read it. Relay any `warning` in the result to the user verbatim — it flags a leftover copy or a file name with no extension.",
 	)
 	def write_document(
 		project_id: str,
@@ -251,18 +258,20 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 		if result.failed_delete_uuids:
 			leftover = f"The new content is saved, but {len(result.failed_delete_uuids)} older copy could not be removed and remains as a duplicate: {', '.join(result.failed_delete_uuids)}. The next write with overwrite=true will clean it up."
 
-		return {
-			"action": result.action,
-			"uuid": result.uuid,
-			"file_name": result.file_name,
-			"replaced_uuids": result.replaced_uuids,
-			"backup_path": result.backup_path,
-			"warning": _joined(leftover, _extension_warning(result.file_name)),
-		}
+		return with_warning(
+			{
+				"action": result.action,
+				"uuid": result.uuid,
+				"file_name": result.file_name,
+				"replaced_uuids": result.replaced_uuids,
+				"backup_path": result.backup_path,
+			},
+			_joined(leftover, _extension_warning(result.file_name)),
+		)
 
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Rename a document, by uuid or by an unambiguous file name. The content is re-created under the new name before the original is deleted, with local backups first, so nothing is lost midway. A new name already in use is refused unless overwrite=true, which replaces its holder (backed up first).",
+		description="Rename a document, by uuid or by an unambiguous file name. The content is re-created under the new name before the original is deleted, with local backups first, so nothing is lost midway. A new name already in use is refused unless overwrite=true, which replaces its holder (backed up first). Relay any `warning` in the result to the user verbatim.",
 	)
 	def rename_document(project_id: str, document: str, new_file_name: str, overwrite: bool = False) -> dict:
 		with translated():
@@ -278,15 +287,17 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 		if result.failed_delete_uuids:
 			leftover = f"The document now exists as {result.new_file_name!r}, but {len(result.failed_delete_uuids)} old copy could not be removed and remains: {', '.join(result.failed_delete_uuids)}. Remove it with delete_document."
 
-		return {
-			"uuid": result.uuid,
-			"old_uuid": result.old_uuid,
-			"old_file_name": result.old_file_name,
-			"new_file_name": result.new_file_name,
-			"replaced_uuids": result.replaced_uuids,
-			"backup_paths": result.backup_paths,
-			"warning": _joined(leftover, _extension_warning(result.new_file_name)),
-		}
+		return with_warning(
+			{
+				"uuid": result.uuid,
+				"old_uuid": result.old_uuid,
+				"old_file_name": result.old_file_name,
+				"new_file_name": result.new_file_name,
+				"replaced_uuids": result.replaced_uuids,
+				"backup_paths": result.backup_paths,
+			},
+			_joined(leftover, _extension_warning(result.new_file_name)),
+		)
 
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),

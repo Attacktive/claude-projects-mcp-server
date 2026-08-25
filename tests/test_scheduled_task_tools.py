@@ -39,7 +39,7 @@ class TestListing:
 		result = await call(server, "list_scheduled_tasks", project_id=PROJECT_UUID)
 
 		assert [task["name"] for task in result["tasks"]] == ["Mine"]
-		assert result["warning"] is None
+		assert "warning" not in result
 
 	async def test_without_a_project_every_task_on_the_account_is_listed(self, server, scheduled_api):
 		scheduled_api.add_scheduled_task(ORGANIZATION, name="Mine", project_uuid=PROJECT_UUID)
@@ -53,7 +53,7 @@ class TestListing:
 		result = await call(server, "list_scheduled_tasks", project_id=PROJECT_UUID)
 
 		assert result["tasks"] == []
-		assert result["warning"] is None
+		assert "warning" not in result
 
 	async def test_tasks_that_match_no_project_fall_back_to_the_whole_listing(self, server, scheduled_api):
 		"""The degrade-loudly path: never let a changed encoding read as "nothing scheduled here"."""
@@ -125,7 +125,7 @@ class TestCreating:
 		assert result["name"] == "Digest"
 		assert result["is_manual"] is True
 		assert result["next_run_at"] is None
-		assert result["warning"] is None
+		assert "warning" not in result
 
 	async def test_a_scheduled_task_reports_when_it_will_next_run(self, server):
 		result = await call(
@@ -176,7 +176,7 @@ class TestCreating:
 		)
 
 		assert result["model"] == "claude-sonnet-5"
-		assert result["warning"] is None
+		assert "warning" not in result
 
 
 class TestUpdating:

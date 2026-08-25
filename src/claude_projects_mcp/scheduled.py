@@ -16,6 +16,7 @@ from mcp_types import ToolAnnotations
 from .client import ClaudeProjectsClient
 from .errors import ApiError, ClaudeProjectsError, NotFoundError
 from .models import ScheduledTask
+from .results import with_warning
 
 _CRON_HELP = "cron_expression must be five space-separated fields in UTC — minute hour day-of-month month day-of-week — for example '0 9 * * 1-5' for weekdays at 09:00 UTC. Omit it entirely for a task that only runs when somebody asks."
 
@@ -38,11 +39,13 @@ def _model_warning(model: str | None) -> str | None:
 
 def _listing(tasks: list[ScheduledTask], project_id: str | None, warning: str | None = None) -> dict:
 	"""The listing answer, in one place so the three ways of reaching it cannot drift apart."""
-	return {
-		"tasks": [_task_dict(task) for task in tasks],
-		"project_id": project_id,
-		"warning": warning,
-	}
+	return with_warning(
+		{
+			"tasks": [_task_dict(task) for task in tasks],
+			"project_id": project_id,
+		},
+		warning,
+	)
 
 
 def _task_dict(task: ScheduledTask) -> dict:
@@ -96,7 +99,7 @@ def register(server: MCPServer, client: ClaudeProjectsClient) -> None:
 def _register_reading(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
-		description="List Cowork scheduled tasks. Pass project_id for one project's tasks, or nothing for every task on the account. Schedules are cron expressions in UTC; a task with none runs only when started by hand.",
+		description="List Cowork scheduled tasks. Pass project_id for one project's tasks, or nothing for every task on the account. Schedules are cron expressions in UTC; a task with none runs only when started by hand. If the tasks cannot be matched to the project, every task in the organization is listed and `warning` says so; relay any `warning` to the user verbatim.",
 	)
 	def list_scheduled_tasks(project_id: str | None = None, organization_id: str | None = None) -> dict:
 		with translated():
@@ -124,7 +127,7 @@ def _register_reading(server: MCPServer, client: ClaudeProjectsClient) -> None:
 def _register_writing(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Create a scheduled task in a project. Omit cron_expression for a task that only runs when started by hand. cron_expression is five fields in UTC, not local time — '0 0 * * 1' is Monday 00:00 UTC. The answer carries next_run_at so the schedule can be checked before it matters.",
+		description="Create a scheduled task in a project. Omit cron_expression for a task that only runs when started by hand. cron_expression is five fields in UTC, not local time — '0 0 * * 1' is Monday 00:00 UTC. The answer carries next_run_at so the schedule can be checked before it matters. Relay any `warning` in the result to the user verbatim — it flags a model id claude.ai accepted without checking.",
 	)
 	def create_scheduled_task(
 		project_id: str,
@@ -142,11 +145,11 @@ def _register_writing(server: MCPServer, client: ClaudeProjectsClient) -> None:
 				model=model,
 			)
 
-		return {**_task_dict(created), "warning": _model_warning(model)}
+		return with_warning(_task_dict(created), _model_warning(model))
 
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Change a scheduled task. Only the fields you pass are touched. Pass enabled=false to pause a task without losing its prompt or schedule, which is almost always better than deleting it. A schedule cannot be removed here — pause it instead.",
+		description="Change a scheduled task. Only the fields you pass are touched. Pass enabled=false to pause a task without losing its prompt or schedule, which is almost always better than deleting it. A schedule cannot be removed here — pause it instead. Relay any `warning` in the result to the user verbatim.",
 	)
 	def update_scheduled_task(
 		task_id: str,
@@ -169,13 +172,13 @@ def _register_writing(server: MCPServer, client: ClaudeProjectsClient) -> None:
 				model=model,
 			)
 
-		return {**_task_dict(updated), "warning": _model_warning(model)}
+		return with_warning(_task_dict(updated), _model_warning(model))
 
 
 def _register_deleting(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
-		description="Delete a scheduled task. Unlike documents, nothing is backed up first — a task is a prompt and a schedule, not content — so prefer update_scheduled_task with enabled=false if you only want it to stop running.",
+		description="Delete a scheduled task. Unlike documents, nothing is backed up first — a task is a prompt and a schedule, not content — so prefer update_scheduled_task with enabled=false if you only want it to stop running. Relay any `warning` in the result to the user verbatim — it reports a task that was already gone.",
 	)
 	def delete_scheduled_task(task_id: str) -> dict:
 		with translated():
@@ -183,12 +186,10 @@ def _register_deleting(server: MCPServer, client: ClaudeProjectsClient) -> None:
 				# Read it first so the answer can name what went, which is the only record of it afterwards.
 				target = client.get_scheduled_task(task_id)
 			except NotFoundError:
-				return {
-					"deleted": False,
-					"task_id": task_id,
-					"name": None,
-					"warning": f"No scheduled task {task_id!r} on this account, so nothing was deleted. It may already be gone. Use list_scheduled_tasks to see what is there.",
-				}
+				return with_warning(
+					{"deleted": False, "task_id": task_id, "name": None},
+					f"No scheduled task {task_id!r} on this account, so nothing was deleted. It may already be gone. Use list_scheduled_tasks to see what is there.",
+				)
 
 			client.delete_scheduled_task(task_id)
 
@@ -198,5 +199,4 @@ def _register_deleting(server: MCPServer, client: ClaudeProjectsClient) -> None:
 			"name": target.name,
 			"prompt": target.prompt,
 			"cron_expression": target.cron_expression,
-			"warning": None,
 		}

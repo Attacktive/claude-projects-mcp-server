@@ -292,10 +292,13 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 		if result.knowledge is None:
 			capacity_warn = "Capacity was not checked: claude.ai did not report the project's knowledge size. The write went ahead; check list_documents for where the project stands."
 		elif result.rollback_failed:
-			old_uuid = existing[0].uuid if existing else "unknown"
 			line_name = "its maximum" if result.knowledge.size > result.knowledge.max_size else "its search threshold"
 			line_limit = result.knowledge.max_size if result.knowledge.size > result.knowledge.max_size else result.knowledge.search_threshold
-			capacity_warn = f"This write took the project past {line_name} ({result.knowledge.size:,} of {line_limit:,} tokens) and could not be undone: deleting the new document {result.uuid} failed. The previous {result.file_name!r} ({old_uuid}) was left in place, so two documents now share the name. Remove one with delete_document, then compact."
+			if existing:
+				conflict_msg = f"The previous {result.file_name!r} ({existing[0].uuid}) was left in place, so two documents now share the name. Remove one with delete_document, then compact."
+			else:
+				conflict_msg = "Remove it with delete_document, then compact."
+			capacity_warn = f"This write took the project past {line_name} ({result.knowledge.size:,} of {line_limit:,} tokens) and could not be undone: deleting the new document {result.uuid} failed. {conflict_msg}"
 		elif result.entered_search_mode:
 			capacity_warn = (
 				f"The project is in search mode: {result.knowledge.size:,} of {result.knowledge.search_threshold:,} tokens. Claude in the web UI now retrieves from the project knowledge instead of reading all of it, so a document can go unseen; compact something with write_document overwrite=true to leave it."

@@ -546,7 +546,6 @@ class ClaudeProjectsClient:
 		backup: Callable[[str, str], str] | None = None,
 	) -> ReplaceResult:
 		"""The single gated write primitive: backup replacing[0] if any, create, measure, keep or revert."""
-		existing_docs = self.list_documents(project_id)
 		backup_path = self._backup_before_save(project_id, file_name, replacing, backup)
 		created = self.create_document(project_id, file_name, content)
 
@@ -566,47 +565,19 @@ class ClaudeProjectsClient:
 				knowledge=None,
 			)
 
-		return self._evaluate_save(
-			project_id=project_id,
-			file_name=file_name,
-			created=created,
-			replacing=replacing,
-			existing_docs=existing_docs,
-			stats=stats,
-			allow_search_mode=allow_search_mode,
-			backup_path=backup_path,
-		)
-
-	def _backup_before_save(self, project_id: str, file_name: str, replacing: list[Document], backup: Callable[[str, str], str] | None) -> str | None:
-		if not replacing or backup is None:
-			return None
-
-		previous = self._hydrated(project_id, replacing[0])
-		return backup(file_name, previous.content or "")
-
-	def _evaluate_save(
-		self,
-		project_id: str,
-		file_name: str,
-		created: Document,
-		replacing: list[Document],
-		existing_docs: list[Document],
-		stats: KnowledgeStats,
-		allow_search_mode: bool,
-		backup_path: str | None,
-	) -> ReplaceResult:
-		added = created.estimated_token_count or 0
+		added = created.estimated_token_count
 		removed = sum(doc.estimated_token_count for doc in replacing if doc.estimated_token_count is not None)
-		projected = stats.size - removed
 		verdict = judge(stats, added, removed)
 
 		if verdict == "fits" or (verdict == "search_mode" and allow_search_mode):
 			replaced, failed = self._delete_documents(project_id, replacing)
+			actually_removed = sum(doc.estimated_token_count for doc in replacing if doc.uuid in replaced and doc.estimated_token_count is not None)
+			final_size = stats.size - actually_removed
 			projected_stats = KnowledgeStats(
-				size=projected,
+				size=final_size,
 				max_size=stats.max_size,
 				search_threshold=stats.search_threshold,
-				search_mode=projected > stats.search_threshold,
+				search_mode=final_size > stats.search_threshold,
 			)
 			entered_search_mode = (verdict == "search_mode") and allow_search_mode
 			return ReplaceResult(
@@ -623,23 +594,28 @@ class ClaudeProjectsClient:
 			project_id=project_id,
 			file_name=file_name,
 			created=created,
-			existing_docs=existing_docs,
 			stats=stats,
-			projected=projected,
 			added=added,
+			removed=removed,
 			verdict=verdict,
 			backup_path=backup_path,
 		)
+
+	def _backup_before_save(self, project_id: str, file_name: str, replacing: list[Document], backup: Callable[[str, str], str] | None) -> str | None:
+		if not replacing or backup is None:
+			return None
+
+		previous = self._hydrated(project_id, replacing[0])
+		return backup(file_name, previous.content or "")
 
 	def _rollback_or_raise(
 		self,
 		project_id: str,
 		file_name: str,
 		created: Document,
-		existing_docs: list[Document],
 		stats: KnowledgeStats,
-		projected: int,
 		added: int,
+		removed: int,
 		verdict: str,
 		backup_path: str | None,
 	) -> ReplaceResult:
@@ -662,7 +638,9 @@ class ClaudeProjectsClient:
 				rollback_failed=True,
 			)
 
+		existing_docs = self.list_documents(project_id)
 		cands = candidates(existing_docs, excluding=file_name)
+		projected = stats.size - removed
 		limit_val = stats.max_size if verdict == "over_max" else stats.search_threshold
 		msg = refusal(file_name, verdict, stats, projected, added, cands)
 		raise KnowledgeFullError(msg, file_name=file_name, verdict=verdict, projected=projected, limit=limit_val)

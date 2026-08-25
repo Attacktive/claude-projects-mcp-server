@@ -75,18 +75,13 @@ def candidates(documents: list[Document], excluding: str) -> list[Candidate]:
 				)
 			)
 
-	def sort_key(candidate: Candidate):
-		token_count = candidate.estimated_token_count if candidate.estimated_token_count is not None else 0
-		created_at = candidate.created_at or ""
-		return (candidate.duplicate, token_count, _invert_str(created_at))
-
-	all_candidates.sort(key=sort_key, reverse=True)
+	# Timsort is stable: sort secondary criterion (oldest created_at first) then primary criteria descending.
+	all_candidates.sort(key=lambda c: c.created_at or "")
+	all_candidates.sort(
+		key=lambda c: (c.duplicate, c.estimated_token_count if c.estimated_token_count is not None else 0),
+		reverse=True,
+	)
 	return all_candidates[:3]
-
-
-def _invert_str(s: str) -> str:
-	"""Invert characters of string so reverse=True sorts strings ascending (oldest first)."""
-	return "".join(chr(65535 - ord(c)) for c in s)
 
 
 def refusal(

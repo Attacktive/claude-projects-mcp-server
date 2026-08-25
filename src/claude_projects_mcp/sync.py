@@ -149,7 +149,14 @@ def _push_one(
 			if dry_run:
 				return FileResult(name, "created", local_path=str(path), detail="dry run")
 
-			client.save_document(project_id, name, content, replacing=[], allow_search_mode=allow_search_mode)
+			res = client.save_document(project_id, name, content, replacing=[], allow_search_mode=allow_search_mode)
+			if res.rollback_failed:
+				return FileResult(
+					name,
+					"refused_full",
+					local_path=str(path),
+					detail=f"write took the project past capacity and could not be undone: deleting new document {res.uuid} failed.",
+				)
 			return FileResult(name, "created", local_path=str(path))
 
 		if existing.is_stub:
@@ -170,6 +177,13 @@ def _push_one(
 			return FileResult(name, "replaced", local_path=str(path), detail="dry run")
 
 		result = client.replace_document(project_id, name, content, allow_search_mode=allow_search_mode, backup=backup)
+		if result.rollback_failed:
+			return FileResult(
+				name,
+				"refused_full",
+				local_path=str(path),
+				detail=f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed.",
+			)
 		detail = None
 		if result.failed_delete_uuids:
 			detail = f"saved, but {len(result.failed_delete_uuids)} old copy could not be removed and remains as a duplicate"

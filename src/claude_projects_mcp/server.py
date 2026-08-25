@@ -79,14 +79,22 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 	backups = BackupStore(settings.backup_directory)
 	server = MCPServer(name="claude-projects", version=_version(), instructions=_INSTRUCTIONS)
 
-	def backup_for(project_id: str):
-		def save(file_name: str, content: str) -> str:
-			return str(backups.save(project_id, file_name, content))
+	_register_projects(server, client, backups)
+	_register_documents(server, client, backups)
+	_register_sync(server, client, backups)
+	register_scheduled_tools(server, client)
 
-		return save
+	return server
 
-	# ---------------------------------------------------------------- reading
 
+def _backup_for(backups: BackupStore, project_id: str):
+	def save(file_name: str, content: str) -> str:
+		return str(backups.save(project_id, file_name, content))
+
+	return save
+
+
+def _register_projects(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
 		description="List the claude.ai / Claude Cowork projects on this account, each tagged with the organization that owns it. Use this to find a project uuid.",
@@ -172,7 +180,6 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			if confirm_name != project.name:
 				raise ToolError(f"confirm_name does not match. To delete this project pass confirm_name={project.name!r} exactly. Nothing has been changed.")
 
-			# Backing up first is the precondition, not a courtesy: once the project is gone its documents are unreachable, so a failure here must stop everything.
 			backup_paths = [str(path) for path in _backup_every_document(client, backups, project_id)]
 			client.delete_project(project_id)
 
@@ -185,6 +192,8 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			"backup_paths": backup_paths,
 		}
 
+
+def _register_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
 		description="List the documents in a project. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
@@ -256,8 +265,6 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			warning,
 		)
 
-	# ---------------------------------------------------------------- writing
-
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
 		description="Create a document, or replace one with overwrite=true. The previous content is backed up locally before any replacement. Pass expected_uuid (from read_document) to refuse the write if a teammate has saved since you read it. Refused when the write would grow the project past its search threshold or its maximum, naming the documents most worth compacting; allow_search_mode=true accepts the threshold, never the maximum. Relay any `warning` in the result to the user verbatim — it flags a leftover copy or a file name with no extension.",
@@ -281,7 +288,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 				content,
 				expected_uuid=expected_uuid,
 				allow_search_mode=allow_search_mode,
-				backup=backup_for(project_id),
+				backup=_backup_for(backups, project_id),
 			)
 
 		leftover = None
@@ -335,7 +342,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 				document,
 				new_file_name,
 				overwrite=overwrite,
-				backup=backup_for(project_id),
+				backup=_backup_for(backups, project_id),
 			)
 
 		leftover = None
@@ -372,8 +379,8 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			"backup_path": str(backup_path),
 		}
 
-	# ------------------------------------------------------------------- sync
 
+def _register_sync(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=False),
 		description="Copy the project's documents into a local folder. Local files that differ are kept, not overwritten, unless overwrite_local=true.",
@@ -413,7 +420,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 					overwrite=overwrite,
 					dry_run=dry_run,
 					allow_search_mode=allow_search_mode,
-					backup=backup_for(project_id),
+					backup=_backup_for(backups, project_id),
 				)
 		except FileNotFoundError as exception:
 			raise ToolError(str(exception)) from exception
@@ -433,12 +440,6 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			},
 			warning,
 		)
-
-	# ------------------------------------------------------- scheduled tasks
-
-	register_scheduled_tools(server, client)
-
-	return server
 
 
 class translated:

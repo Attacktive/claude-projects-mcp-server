@@ -247,9 +247,9 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 				backup=backup_for(project_id),
 			)
 
-		warning = None
+		leftover = None
 		if result.failed_delete_uuids:
-			warning = f"The new content is saved, but {len(result.failed_delete_uuids)} older copy could not be removed and remains as a duplicate: {', '.join(result.failed_delete_uuids)}. The next write with overwrite=true will clean it up."
+			leftover = f"The new content is saved, but {len(result.failed_delete_uuids)} older copy could not be removed and remains as a duplicate: {', '.join(result.failed_delete_uuids)}. The next write with overwrite=true will clean it up."
 
 		return {
 			"action": result.action,
@@ -257,7 +257,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			"file_name": result.file_name,
 			"replaced_uuids": result.replaced_uuids,
 			"backup_path": result.backup_path,
-			"warning": warning,
+			"warning": _joined(leftover, _extension_warning(result.file_name)),
 		}
 
 	@server.tool(
@@ -274,9 +274,9 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 				backup=backup_for(project_id),
 			)
 
-		warning = None
+		leftover = None
 		if result.failed_delete_uuids:
-			warning = f"The document now exists as {result.new_file_name!r}, but {len(result.failed_delete_uuids)} old copy could not be removed and remains: {', '.join(result.failed_delete_uuids)}. Remove it with delete_document."
+			leftover = f"The document now exists as {result.new_file_name!r}, but {len(result.failed_delete_uuids)} old copy could not be removed and remains: {', '.join(result.failed_delete_uuids)}. Remove it with delete_document."
 
 		return {
 			"uuid": result.uuid,
@@ -285,7 +285,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 			"new_file_name": result.new_file_name,
 			"replaced_uuids": result.replaced_uuids,
 			"backup_paths": result.backup_paths,
-			"warning": warning,
+			"warning": _joined(leftover, _extension_warning(result.new_file_name)),
 		}
 
 	@server.tool(
@@ -416,6 +416,28 @@ def _duplicate_warning(matches: list[Document], returned: Document) -> str | Non
 		return None
 
 	return f"{len(matches)} documents share this name. Returned the newest ({returned.uuid}); the others are {', '.join(others)}. This usually means an interrupted save — a write with overwrite=true will clean it up, but check the others first in case a teammate edited one."
+
+
+def _extension_warning(file_name: str) -> str | None:
+	"""The web UI picks its renderer by file extension, and nothing in a tool call hints that a name needs one.
+
+	Spelled out rather than taken from pathlib, whose `suffix` reports a bare trailing period as an extension on Python 3.14; here `notes.` is as extension-less as `notes`.
+	"""
+	stem, _, extension = file_name.rpartition(".")
+	if stem and extension:
+		return None
+
+	suggestion = f"{file_name.rstrip('.')}.md"
+	return f"{file_name!r} has no file extension, so the claude.ai UI will show it as plain text rather than rendered markdown. rename_document can give it one, such as {suggestion!r}."
+
+
+def _joined(*warnings: str | None) -> str | None:
+	"""One warning out of whichever apply, or None when none do."""
+	present = [warning for warning in warnings if warning]
+	if not present:
+		return None
+
+	return " ".join(present)
 
 
 def _result_dict(result) -> dict:

@@ -185,6 +185,21 @@ class TestWriteDoc:
 
 		assert result["action"] == "created"
 		assert api.content_of(PROJECT, "notes.md") == ["hello"]
+		assert result["warning"] is None
+
+	async def test_a_name_without_an_extension_gets_a_warning(self, api, server):
+		"""The web UI renders by extension, so an extension-less name silently comes out as plain text — invisible from a tool call, where nothing looks like a file."""
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes", content="# hello")
+
+		assert api.content_of(PROJECT, "notes") == ["# hello"], "the write itself still goes ahead"
+		assert "extension" in result["warning"]
+		assert "'notes.md'" in result["warning"]
+
+	async def test_a_name_ending_in_a_period_is_also_extension_less(self, api, server):
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.", content="# hello")
+
+		assert "extension" in result["warning"]
+		assert "'notes.md'" in result["warning"], "the suggestion must not double the period"
 
 	async def test_refuses_to_replace_without_overwrite(self, api, server):
 		api.add_document(PROJECT, "notes.md", "precious")
@@ -234,6 +249,16 @@ class TestRenameDocument:
 		assert api.content_of(PROJECT, "plan.md") == ["hello"]
 		assert result["old_uuid"] == uuid
 		assert result["new_file_name"] == "plan.md"
+		assert result["warning"] is None
+
+	async def test_a_new_name_without_an_extension_gets_a_warning(self, api, server):
+		api.add_document(PROJECT, "notes.md", "hello")
+
+		result = await call(server, "rename_document", project_id=PROJECT, document="notes.md", new_file_name="plan")
+
+		assert api.document_names(PROJECT) == ["plan"], "the rename itself still goes ahead"
+		assert "extension" in result["warning"]
+		assert "'plan.md'" in result["warning"]
 
 	async def test_the_source_is_backed_up(self, api, server, tmp_path):
 		api.add_document(PROJECT, "notes.md", "hello")

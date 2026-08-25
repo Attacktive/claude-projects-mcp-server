@@ -11,7 +11,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 349 tests, and the full read-and-write path has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All seventeen tools are implemented and covered by 352 tests, and the full read-and-write path has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
 What that established, and what the implementation now relies on:
@@ -100,6 +100,9 @@ Run this way, the server finds the `.env` sitting next to the project by itself;
 Every tool that acts on a project takes an explicit `project_id`; only `list_projects` and `create_project` are account-wide.
 Scheduled tasks are addressed by their own `task_id` once they exist, so only `create_scheduled_task` names a project; on `list_scheduled_tasks` a `project_id` narrows the listing and omitting it widens the search to the account.
 Start with `list_projects` to find the uuid, or take it from the URL: `https://claude.ai/cowork/project/<this-part>`.
+
+Give documents a file extension: the web UI picks its renderer by name, so `notes` displays as plain text where `notes.md` renders as markdown.
+`write_document` and `rename_document` warn when a name has none — a bare trailing period counts as none — and suggest the `.md` form; the write itself still goes ahead.
 
 The session key is the only required setting; `CLAUDE_PROJECTS_BACKUP_DIRECTORY`, `CLAUDE_PROJECTS_BASE_URL`, and `CLAUDE_PROJECTS_IMPERSONATE` optionally override where backups land, which host is spoken to, and which browser fingerprint `curl_cffi` presents.
 Which organization owns a project is worked out by searching — one listing per organization per session, cached — so a project is reachable wherever on the account it lives, and nothing can be pointed at the wrong place.

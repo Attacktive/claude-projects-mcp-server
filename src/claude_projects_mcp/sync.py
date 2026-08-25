@@ -146,53 +146,74 @@ def _push_one(
 		existing = remote.get(name)
 
 		if existing is None:
-			if dry_run:
-				return FileResult(name, "created", local_path=str(path), detail="dry run")
+			return _push_new(client, project_id, path, name, content, dry_run, allow_search_mode)
 
-			res = client.save_document(project_id, name, content, replacing=[], allow_search_mode=allow_search_mode)
-			if res.rollback_failed:
-				return FileResult(
-					name,
-					"refused_full",
-					local_path=str(path),
-					detail=f"write took the project past capacity and could not be undone: deleting new document {res.uuid} failed.",
-				)
-			return FileResult(name, "created", local_path=str(path))
-
-		if existing.is_stub:
-			existing = client.get_document(project_id, existing.uuid)
-
-		if existing.content == content:
-			return FileResult(name, "unchanged", local_path=str(path))
-
-		if not overwrite:
-			return FileResult(
-				name,
-				"skipped_exists",
-				local_path=str(path),
-				detail="remote document differs; pass overwrite to replace it",
-			)
-
-		if dry_run:
-			return FileResult(name, "replaced", local_path=str(path), detail="dry run")
-
-		result = client.replace_document(project_id, name, content, allow_search_mode=allow_search_mode, backup=backup)
-		if result.rollback_failed:
-			return FileResult(
-				name,
-				"refused_full",
-				local_path=str(path),
-				detail=f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed.",
-			)
-		detail = None
-		if result.failed_delete_uuids:
-			detail = f"saved, but {len(result.failed_delete_uuids)} old copy could not be removed and remains as a duplicate"
-
-		return FileResult(name, "replaced", local_path=str(path), detail=detail, backup_path=result.backup_path)
+		return _push_existing(client, project_id, path, name, content, existing, overwrite, dry_run, allow_search_mode, backup)
 	except KnowledgeFullError as exception:
 		return FileResult(name, "refused_full", local_path=str(path), detail=str(exception))
 	except (ClaudeProjectsError, OSError) as exception:
 		return FileResult(name, "error", local_path=str(path), detail=str(exception))
+
+
+def _push_new(client: ClaudeProjectsClient, project_id: str, path: Path, name: str, content: str, dry_run: bool, allow_search_mode: bool) -> FileResult:
+	if dry_run:
+		return FileResult(name, "created", local_path=str(path), detail="dry run")
+
+	res = client.save_document(project_id, name, content, replacing=[], allow_search_mode=allow_search_mode)
+	if res.rollback_failed:
+		return FileResult(
+			name,
+			"refused_full",
+			local_path=str(path),
+			detail=f"write took the project past capacity and could not be undone: deleting new document {res.uuid} failed.",
+		)
+
+	return FileResult(name, "created", local_path=str(path))
+
+
+def _push_existing(
+	client: ClaudeProjectsClient,
+	project_id: str,
+	path: Path,
+	name: str,
+	content: str,
+	existing: Document,
+	overwrite: bool,
+	dry_run: bool,
+	allow_search_mode: bool,
+	backup: Callable[[str, str], str] | None,
+) -> FileResult:
+	if existing.is_stub:
+		existing = client.get_document(project_id, existing.uuid)
+
+	if existing.content == content:
+		return FileResult(name, "unchanged", local_path=str(path))
+
+	if not overwrite:
+		return FileResult(
+			name,
+			"skipped_exists",
+			local_path=str(path),
+			detail="remote document differs; pass overwrite to replace it",
+		)
+
+	if dry_run:
+		return FileResult(name, "replaced", local_path=str(path), detail="dry run")
+
+	result = client.replace_document(project_id, name, content, allow_search_mode=allow_search_mode, backup=backup)
+	if result.rollback_failed:
+		return FileResult(
+			name,
+			"refused_full",
+			local_path=str(path),
+			detail=f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed.",
+		)
+
+	detail = None
+	if result.failed_delete_uuids:
+		detail = f"saved, but {len(result.failed_delete_uuids)} old copy could not be removed and remains as a duplicate"
+
+	return FileResult(name, "replaced", local_path=str(path), detail=detail, backup_path=result.backup_path)
 
 
 def _index_by_name(documents: list[Document]) -> dict[str, Document]:

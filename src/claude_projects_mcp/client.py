@@ -536,6 +536,12 @@ class ClaudeProjectsClient:
 
 		return deleted, failed
 
+	def _try_knowledge_stats(self, project_id: str) -> KnowledgeStats | None:
+		try:
+			return self.knowledge_stats(project_id)
+		except NotFoundError:
+			return None
+
 	def save_document(
 		self,
 		project_id: str,
@@ -548,11 +554,7 @@ class ClaudeProjectsClient:
 		"""The single gated write primitive: backup replacing[0] if any, create, measure, keep or revert."""
 		backup_path = self._backup_before_save(project_id, file_name, replacing, backup)
 		created = self.create_document(project_id, file_name, content)
-
-		try:
-			stats = self.knowledge_stats(project_id)
-		except NotFoundError:
-			stats = None
+		stats = self._try_knowledge_stats(project_id)
 
 		if stats is None or created.estimated_token_count is None:
 			replaced, failed = self._delete_documents(project_id, replacing)
@@ -570,25 +572,7 @@ class ClaudeProjectsClient:
 		verdict = judge(stats, added, removed)
 
 		if verdict == "fits" or (verdict == "search_mode" and allow_search_mode):
-			replaced, failed = self._delete_documents(project_id, replacing)
-			actually_removed = sum(doc.estimated_token_count for doc in replacing if doc.uuid in replaced and doc.estimated_token_count is not None)
-			final_size = stats.size - actually_removed
-			projected_stats = KnowledgeStats(
-				size=final_size,
-				max_size=stats.max_size,
-				search_threshold=stats.search_threshold,
-				search_mode=final_size > stats.search_threshold,
-			)
-			entered_search_mode = (verdict == "search_mode") and allow_search_mode
-			return ReplaceResult(
-				uuid=created.uuid,
-				file_name=file_name,
-				replaced_uuids=replaced,
-				failed_delete_uuids=failed,
-				backup_path=backup_path,
-				knowledge=projected_stats,
-				entered_search_mode=entered_search_mode,
-			)
+			return self._admit_save(project_id, file_name, created, replacing, stats, allow_search_mode, verdict, backup_path)
 
 		return self._rollback_or_raise(
 			project_id=project_id,
@@ -599,6 +583,37 @@ class ClaudeProjectsClient:
 			removed=removed,
 			verdict=verdict,
 			backup_path=backup_path,
+		)
+
+	def _admit_save(
+		self,
+		project_id: str,
+		file_name: str,
+		created: Document,
+		replacing: list[Document],
+		stats: KnowledgeStats,
+		allow_search_mode: bool,
+		verdict: str,
+		backup_path: str | None,
+	) -> ReplaceResult:
+		replaced, failed = self._delete_documents(project_id, replacing)
+		actually_removed = sum(doc.estimated_token_count for doc in replacing if doc.uuid in replaced and doc.estimated_token_count is not None)
+		final_size = stats.size - actually_removed
+		projected_stats = KnowledgeStats(
+			size=final_size,
+			max_size=stats.max_size,
+			search_threshold=stats.search_threshold,
+			search_mode=final_size > stats.search_threshold,
+		)
+		entered_search_mode = (verdict == "search_mode") and allow_search_mode
+		return ReplaceResult(
+			uuid=created.uuid,
+			file_name=file_name,
+			replaced_uuids=replaced,
+			failed_delete_uuids=failed,
+			backup_path=backup_path,
+			knowledge=projected_stats,
+			entered_search_mode=entered_search_mode,
 		)
 
 	def _backup_before_save(self, project_id: str, file_name: str, replacing: list[Document], backup: Callable[[str, str], str] | None) -> str | None:

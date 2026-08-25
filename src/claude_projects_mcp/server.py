@@ -213,6 +213,27 @@ def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, ba
 		}
 
 
+def _find_duplicates(documents: list[Document]) -> list[str]:
+	seen, duplicates = set(), []
+	for document in documents:
+		if document.file_name in seen and document.file_name not in duplicates:
+			duplicates.append(document.file_name)
+
+		seen.add(document.file_name)
+
+	return duplicates
+
+
+def _list_documents_warning(stats) -> str | None:
+	if stats is None:
+		return "Capacity was not checked: claude.ai did not report the project's knowledge size."
+
+	if stats.size > stats.max_size:
+		return f"The project is past its maximum: {stats.size:,} of {stats.max_size:,} tokens. The web UI is refusing to add to the project knowledge until something is removed or compacted, and write_document will refuse any write that grows it."
+
+	return None
+
+
 def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
@@ -226,19 +247,6 @@ def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 			except NotFoundError:
 				stats = None
 
-		seen, duplicates = set(), []
-		for document in documents:
-			if document.file_name in seen and document.file_name not in duplicates:
-				duplicates.append(document.file_name)
-
-			seen.add(document.file_name)
-
-		warning = None
-		if stats is None:
-			warning = "Capacity was not checked: claude.ai did not report the project's knowledge size."
-		elif stats.size > stats.max_size:
-			warning = f"The project is past its maximum: {stats.size:,} of {stats.max_size:,} tokens. The web UI is refusing to add to the project knowledge until something is removed or compacted, and write_document will refuse any write that grows it."
-
 		body: dict = {
 			"project_id": project_id,
 			"documents": [
@@ -251,7 +259,7 @@ def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 				}
 				for document in documents
 			],
-			"duplicate_file_names": duplicates,
+			"duplicate_file_names": _find_duplicates(documents),
 		}
 		if stats is not None:
 			body["knowledge"] = {
@@ -261,7 +269,7 @@ def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 				"search_mode": stats.search_mode,
 			}
 
-		return with_warning(body, warning)
+		return with_warning(body, _list_documents_warning(stats))
 
 
 def _register_read_document(server: MCPServer, client: ClaudeProjectsClient) -> None:
@@ -286,6 +294,29 @@ def _register_read_document(server: MCPServer, client: ClaudeProjectsClient) -> 
 			},
 			warning,
 		)
+
+
+def _leftover_warning(result) -> str | None:
+	if not result.failed_delete_uuids:
+		return None
+
+	return f"The new content is saved, but {len(result.failed_delete_uuids)} older copy could not be removed and remains as a duplicate: {', '.join(result.failed_delete_uuids)}. The next write with overwrite=true will clean it up."
+
+
+def _write_capacity_warning(result, existing) -> str | None:
+	if result.knowledge is None:
+		return "Capacity was not checked: claude.ai did not report the project's knowledge size. The write went ahead; check list_documents for where the project stands."
+
+	if result.rollback_failed:
+		line_name = "its maximum" if result.knowledge.size > result.knowledge.max_size else "its search threshold"
+		line_limit = result.knowledge.max_size if result.knowledge.size > result.knowledge.max_size else result.knowledge.search_threshold
+		conflict_msg = f"The previous {result.file_name!r} ({existing[0].uuid}) was left in place, so two documents now share the name. Remove one with delete_document, then compact." if existing else "Remove it with delete_document, then compact."
+		return f"This write took the project past {line_name} ({result.knowledge.size:,} of {line_limit:,} tokens) and could not be undone: deleting the new document {result.uuid} failed. {conflict_msg}"
+
+	if result.entered_search_mode:
+		return f"The project is in search mode: {result.knowledge.size:,} of {result.knowledge.search_threshold:,} tokens. Claude in the web UI now retrieves from the project knowledge instead of reading all of it, so a document can go unseen; compact something with write_document overwrite=true to leave it."
+
+	return None
 
 
 def _register_write_document(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
@@ -315,26 +346,6 @@ def _register_write_document(server: MCPServer, client: ClaudeProjectsClient, ba
 				backup=_backup_for(backups, project_id),
 			)
 
-		leftover = None
-		if result.failed_delete_uuids:
-			leftover = f"The new content is saved, but {len(result.failed_delete_uuids)} older copy could not be removed and remains as a duplicate: {', '.join(result.failed_delete_uuids)}. The next write with overwrite=true will clean it up."
-
-		capacity_warn = None
-		if result.knowledge is None:
-			capacity_warn = "Capacity was not checked: claude.ai did not report the project's knowledge size. The write went ahead; check list_documents for where the project stands."
-		elif result.rollback_failed:
-			line_name = "its maximum" if result.knowledge.size > result.knowledge.max_size else "its search threshold"
-			line_limit = result.knowledge.max_size if result.knowledge.size > result.knowledge.max_size else result.knowledge.search_threshold
-			if existing:
-				conflict_msg = f"The previous {result.file_name!r} ({existing[0].uuid}) was left in place, so two documents now share the name. Remove one with delete_document, then compact."
-			else:
-				conflict_msg = "Remove it with delete_document, then compact."
-			capacity_warn = f"This write took the project past {line_name} ({result.knowledge.size:,} of {line_limit:,} tokens) and could not be undone: deleting the new document {result.uuid} failed. {conflict_msg}"
-		elif result.entered_search_mode:
-			capacity_warn = (
-				f"The project is in search mode: {result.knowledge.size:,} of {result.knowledge.search_threshold:,} tokens. Claude in the web UI now retrieves from the project knowledge instead of reading all of it, so a document can go unseen; compact something with write_document overwrite=true to leave it."
-			)
-
 		body: dict = {
 			"action": result.action,
 			"uuid": result.uuid,
@@ -352,7 +363,7 @@ def _register_write_document(server: MCPServer, client: ClaudeProjectsClient, ba
 
 		return with_warning(
 			body,
-			_joined(leftover, _extension_warning(result.file_name), capacity_warn),
+			_joined(_leftover_warning(result), _extension_warning(result.file_name), _write_capacity_warning(result, existing)),
 		)
 
 
@@ -427,6 +438,14 @@ def _register_pull_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 		}
 
 
+def _first_refused_warning(results: list) -> str | None:
+	for res in results:
+		if res.status == "refused_full" and res.detail:
+			return res.detail
+
+	return None
+
+
 def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
@@ -455,12 +474,6 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 		except FileNotFoundError as exception:
 			raise ToolError(str(exception)) from exception
 
-		warning = None
-		for res in results:
-			if res.status == "refused_full" and res.detail:
-				warning = res.detail
-				break
-
 		return with_warning(
 			{
 				"project_id": project_id,
@@ -468,7 +481,7 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 				"results": [_result_dict(result) for result in results],
 				"summary": summarise(results),
 			},
-			warning,
+			_first_refused_warning(results),
 		)
 
 

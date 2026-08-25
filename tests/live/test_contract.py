@@ -100,6 +100,23 @@ def test_documents_can_be_listed(client, project):
 
 
 @skip_unless_live
+def test_kb_stats_matches_document_token_counts(client, project):
+	created = client.create_document(project, CONTRACT_DOCUMENT, "contract test content")
+	try:
+		stats = client.knowledge_stats(project)
+		assert stats.size > 0
+		assert stats.max_size > 0
+		assert stats.search_threshold > 0
+		assert isinstance(stats.search_mode, bool)
+
+		docs = client.list_documents(project)
+		total_tokens = sum(doc.estimated_token_count for doc in docs if doc.estimated_token_count is not None)
+		assert stats.size == total_tokens
+	finally:
+		client.delete_document(project, created.uuid)
+
+
+@skip_unless_live
 def test_a_document_round_trips(client, project):
 	"""Create, read back, replace, then delete — the full write path against the real API."""
 	created = None

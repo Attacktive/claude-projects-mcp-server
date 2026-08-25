@@ -1,0 +1,6 @@
+{
+	"knowledge_size": 3229,
+	"max_knowledge_size": 2000000,
+	"project_knowledge_search_threshold": 50000,
+	"use_project_knowledge_search": false
+}

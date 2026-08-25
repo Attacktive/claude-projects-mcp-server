@@ -9,9 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .errors import AmbiguousDocError, ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, NotFoundError, RateLimitedError
+from .capacity import candidates, judge, refusal
+from .errors import AmbiguousDocError, ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, KnowledgeFullError, NotFoundError, RateLimitedError
 from .identifiers import chat_project_id
-from .models import Document, Organization, Project, ScheduledTask
+from .models import Document, KnowledgeStats, Organization, Project, ScheduledTask
 from .transport import HttpMethod, Transport
 
 _UUID_LIKE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{4,}$")
@@ -41,6 +42,9 @@ class ReplaceResult:
 	replaced_uuids: list[str] = field(default_factory=list)
 	failed_delete_uuids: list[str] = field(default_factory=list)
 	backup_path: str | None = None
+	knowledge: KnowledgeStats | None = None
+	entered_search_mode: bool = False
+	rollback_failed: bool = False
 
 	@property
 	def action(self) -> str:
@@ -295,6 +299,11 @@ class ClaudeProjectsClient:
 		organization_id = self.resolve_organization_for_project(project_id)
 		return f"/organizations/{organization_id}/projects/{project_id}/docs"
 
+	def knowledge_stats(self, project_id: str) -> KnowledgeStats:
+		organization_id = self.resolve_organization_for_project(project_id)
+		raw = self._request("GET", f"/organizations/{organization_id}/projects/{project_id}/kb/stats")
+		return KnowledgeStats.parse(raw)
+
 	def list_documents(self, project_id: str) -> list[Document]:
 		"""Newest first. Entries may be stubs, depending on what the API includes."""
 		raw = self._request("GET", self._documents_path(project_id))
@@ -527,29 +536,151 @@ class ClaudeProjectsClient:
 
 		return deleted, failed
 
+	def save_document(
+		self,
+		project_id: str,
+		file_name: str,
+		content: str,
+		replacing: list[Document],
+		allow_search_mode: bool = False,
+		backup: Callable[[str, str], str] | None = None,
+	) -> ReplaceResult:
+		"""The single gated write primitive: backup replacing[0] if any, create, measure, keep or revert."""
+		existing_docs = self.list_documents(project_id)
+		backup_path = self._backup_before_save(project_id, file_name, replacing, backup)
+		created = self.create_document(project_id, file_name, content)
+
+		try:
+			stats = self.knowledge_stats(project_id)
+		except NotFoundError:
+			stats = None
+
+		if stats is None or created.estimated_token_count is None:
+			replaced, failed = self._delete_documents(project_id, replacing)
+			return ReplaceResult(
+				uuid=created.uuid,
+				file_name=file_name,
+				replaced_uuids=replaced,
+				failed_delete_uuids=failed,
+				backup_path=backup_path,
+				knowledge=None,
+			)
+
+		return self._evaluate_save(
+			project_id=project_id,
+			file_name=file_name,
+			created=created,
+			replacing=replacing,
+			existing_docs=existing_docs,
+			stats=stats,
+			allow_search_mode=allow_search_mode,
+			backup_path=backup_path,
+		)
+
+	def _backup_before_save(self, project_id: str, file_name: str, replacing: list[Document], backup: Callable[[str, str], str] | None) -> str | None:
+		if not replacing or backup is None:
+			return None
+
+		previous = self._hydrated(project_id, replacing[0])
+		return backup(file_name, previous.content or "")
+
+	def _evaluate_save(
+		self,
+		project_id: str,
+		file_name: str,
+		created: Document,
+		replacing: list[Document],
+		existing_docs: list[Document],
+		stats: KnowledgeStats,
+		allow_search_mode: bool,
+		backup_path: str | None,
+	) -> ReplaceResult:
+		added = created.estimated_token_count or 0
+		removed = sum(doc.estimated_token_count for doc in replacing if doc.estimated_token_count is not None)
+		projected = stats.size - removed
+		verdict = judge(stats, added, removed)
+
+		if verdict == "fits" or (verdict == "search_mode" and allow_search_mode):
+			replaced, failed = self._delete_documents(project_id, replacing)
+			projected_stats = KnowledgeStats(
+				size=projected,
+				max_size=stats.max_size,
+				search_threshold=stats.search_threshold,
+				search_mode=projected > stats.search_threshold,
+			)
+			entered_search_mode = (verdict == "search_mode") and allow_search_mode
+			return ReplaceResult(
+				uuid=created.uuid,
+				file_name=file_name,
+				replaced_uuids=replaced,
+				failed_delete_uuids=failed,
+				backup_path=backup_path,
+				knowledge=projected_stats,
+				entered_search_mode=entered_search_mode,
+			)
+
+		return self._rollback_or_raise(
+			project_id=project_id,
+			file_name=file_name,
+			created=created,
+			existing_docs=existing_docs,
+			stats=stats,
+			projected=projected,
+			added=added,
+			verdict=verdict,
+			backup_path=backup_path,
+		)
+
+	def _rollback_or_raise(
+		self,
+		project_id: str,
+		file_name: str,
+		created: Document,
+		existing_docs: list[Document],
+		stats: KnowledgeStats,
+		projected: int,
+		added: int,
+		verdict: str,
+		backup_path: str | None,
+	) -> ReplaceResult:
+		try:
+			self.delete_document(project_id, created.uuid)
+		except Exception:
+			projected_stats = KnowledgeStats(
+				size=stats.size,
+				max_size=stats.max_size,
+				search_threshold=stats.search_threshold,
+				search_mode=stats.size > stats.search_threshold,
+			)
+			return ReplaceResult(
+				uuid=created.uuid,
+				file_name=file_name,
+				replaced_uuids=[],
+				failed_delete_uuids=[],
+				backup_path=backup_path,
+				knowledge=projected_stats,
+				rollback_failed=True,
+			)
+
+		cands = candidates(existing_docs, excluding=file_name)
+		limit_val = stats.max_size if verdict == "over_max" else stats.search_threshold
+		msg = refusal(file_name, verdict, stats, projected, added, cands)
+		raise KnowledgeFullError(msg, file_name=file_name, verdict=verdict, projected=projected, limit=limit_val)
+
 	def replace_document(
 		self,
 		project_id: str,
 		file_name: str,
 		content: str,
 		expected_uuid: str | None = None,
+		allow_search_mode: bool = False,
 		backup: Callable[[str, str], str] | None = None,
 	) -> ReplaceResult:
-		"""Save `content` under `file_name`, replacing any document already using it.
-
-		The API has no update endpoint, so this creates the replacement first and only then deletes what it replaced.
-		That ordering is the whole safety argument: no path deletes the original until the new content exists remotely and the old content has been backed up locally.
-
-		`backup` receives (file_name, old_content) and returns where it was saved.
-		If it raises, nothing is mutated.
-		"""
+		"""Save `content` under `file_name`, replacing any document already using it."""
 		existing = self.find_documents_by_name(project_id, file_name)
 
 		if expected_uuid is not None:
-			actual = None
-			if existing:
-				actual = existing[0].uuid
-
+			actual = existing[0].uuid if existing else None
 			if actual != expected_uuid:
 				raise ConcurrentEditError(
 					f"{file_name!r} changed since it was read (expected {expected_uuid}, found {actual or 'no document at all'}). Somebody else saved in the meantime; re-read it before writing.",
@@ -558,20 +689,13 @@ class ClaudeProjectsClient:
 					actual_uuid=actual,
 				)
 
-		backup_path = None
-		if existing and backup is not None:
-			previous = self._hydrated(project_id, existing[0])
-			backup_path = backup(file_name, previous.content or "")
-
-		created = self.create_document(project_id, file_name, content)
-		replaced, failed = self._delete_documents(project_id, existing)
-
-		return ReplaceResult(
-			uuid=created.uuid,
-			file_name=file_name,
-			replaced_uuids=replaced,
-			failed_delete_uuids=failed,
-			backup_path=backup_path,
+		return self.save_document(
+			project_id,
+			file_name,
+			content,
+			replacing=existing,
+			allow_search_mode=allow_search_mode,
+			backup=backup,
 		)
 
 	def _rename_occupants(self, project_id: str, new_file_name: str, overwrite: bool) -> list[Document]:

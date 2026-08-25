@@ -11,7 +11,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 355 tests, and the full read-and-write path has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All seventeen tools are implemented and covered by 377 tests, and the full read-and-write path has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
 What that established, and what the implementation now relies on:
@@ -84,13 +84,13 @@ Run this way, the server finds the `.env` sitting next to the project by itself;
 | `create_project` | Start a project, optionally private and with instructions |
 | `update_project` | Change name, description, or instructions; untouched fields are left alone |
 | `delete_project` | Remove a project **and every document in it** (see Safety) |
-| `list_documents` | Documents in a project, flagging any duplicate file names |
+| `list_documents` | Documents in a project, reporting knowledge capacity usage and flagging duplicate file names |
 | `read_document` | One document by uuid or file name |
-| `write_document` | Create, or replace with `overwrite=true` |
+| `write_document` | Create, or replace with `overwrite=true` (gated by knowledge capacity) |
 | `rename_document` | Move a document to a new file name; a name already in use needs `overwrite=true` |
 | `delete_document` | Remove a document (always backed up first) |
 | `pull_documents` | Copy a project's documents into a local folder |
-| `push_documents` | Upload a local folder's documents into a project |
+| `push_documents` | Upload a local folder's documents into a project (gated by knowledge capacity) |
 | `list_scheduled_tasks` | Scheduled tasks, for one project or the whole account |
 | `get_scheduled_task` | One task, including the prompt it will send |
 | `create_scheduled_task` | Schedule a prompt against a project, or leave it manual-only |
@@ -106,6 +106,17 @@ Give documents a file extension: the web UI picks its renderer by name, so `note
 
 A result carries a `warning` key only when there is something to hear, and it comes first.
 The model is the only reader a tool result is guaranteed to have, so the tool descriptions and the server instructions tell it to relay any `warning` to the user verbatim — nothing else in the chain will.
+
+### Capacity
+
+A project's knowledge has two lines:
+- **Search threshold** (`project_knowledge_search_threshold`): past this line, Claude in the web UI retrieves from the knowledge instead of reading all of it, so documents can go unseen.
+- **Maximum capacity** (`max_knowledge_size`): past this line, the web UI refuses further uploads until content is removed or compacted.
+
+The API enforces neither line on writes, so `write_document` and `push_documents` enforce them server-side:
+- A write that would grow the project past a line is undone and refused, naming up to three candidate documents most worth compacting (duplicates first, then by size and age).
+- Passing `allow_search_mode=true` accepts crossing the search threshold (with a warning); nothing accepts exceeding the maximum capacity.
+- `list_documents` reports current knowledge capacity usage under the `knowledge` key.
 
 The session key is the only required setting; `CLAUDE_PROJECTS_BACKUP_DIRECTORY`, `CLAUDE_PROJECTS_BASE_URL`, and `CLAUDE_PROJECTS_IMPERSONATE` optionally override where backups land, which host is spoken to, and which browser fingerprint `curl_cffi` presents.
 Which organization owns a project is worked out by searching — one listing per organization per session, cached — so a project is reachable wherever on the account it lives, and nothing can be pointed at the wrong place.

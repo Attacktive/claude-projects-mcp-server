@@ -84,7 +84,7 @@ class TestRegistration:
 
 	async def test_every_tool_that_can_warn_asks_for_the_warning_to_be_relayed(self, server):
 		"""The model is the only reader a tool result is guaranteed to have, so the description has to say what to do with a warning."""
-		can_warn = {"read_document", "write_document", "rename_document", "list_scheduled_tasks", "create_scheduled_task", "update_scheduled_task", "delete_scheduled_task"}
+		can_warn = {"list_documents", "read_document", "write_document", "rename_document", "push_documents", "list_scheduled_tasks", "create_scheduled_task", "update_scheduled_task", "delete_scheduled_task"}
 		tools = {tool.name: tool for tool in await server.list_tools()}
 
 		for name in can_warn:
@@ -149,8 +149,18 @@ class TestListDocs:
 				"file_name": "notes.md",
 				"created_at": result["documents"][0]["created_at"],
 				"characters": 3,
+				"estimated_token_count": 3,
 			}
 		]
+
+	async def test_list_documents_past_max_capacity_warns(self, api, server):
+		api.projects[PROJECT]["_max_knowledge_size"] = 100
+		api.add_document(PROJECT, "big.md", "a" * 150)
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert "past its maximum" in result["warning"]
+		assert result["knowledge"]["size"] == 150
 
 
 class TestReadDoc:
@@ -254,6 +264,91 @@ class TestWriteDoc:
 
 		assert "re-read" in str(exception_info.value)
 		assert api.content_of(PROJECT, "notes.md") == ["a teammate saved this"]
+
+	async def test_write_fits_carries_knowledge(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 500
+		api.projects[PROJECT]["_max_knowledge_size"] = 2000
+
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.md", content="hello")
+
+		assert result["action"] == "created"
+		assert result["knowledge"] == {
+			"size": 5,
+			"search_threshold": 500,
+			"max_size": 2000,
+			"search_mode": False,
+		}
+
+	async def test_write_crossing_threshold_is_refused_and_rolled_back(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 100
+		api.add_document(PROJECT, "cand1.md", "a" * 80)
+		api.add_document(PROJECT, "cand2.md", "b" * 10)
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "write_document", project_id=PROJECT, file_name="new.md", content="c" * 30)
+
+		msg = str(exception_info.value)
+		assert "search threshold" in msg
+		assert "'cand1.md'" in msg
+		assert api.content_of(PROJECT, "new.md") == []
+		assert any(method == "DELETE" and f"/organizations/{ORGANIZATION}/projects/{PROJECT}/docs/" in path for method, path in api.log)
+
+	async def test_write_crossing_threshold_with_allow_search_mode(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 100
+
+		result = await call(server, "write_document", project_id=PROJECT, file_name="new.md", content="a" * 120, allow_search_mode=True)
+
+		assert result["action"] == "created"
+		assert result["knowledge"]["search_mode"] is True
+		assert "search mode" in result["warning"]
+
+	async def test_write_crossing_cap_with_allow_search_mode_still_refused(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 100
+		api.projects[PROJECT]["_max_knowledge_size"] = 150
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "write_document", project_id=PROJECT, file_name="new.md", content="a" * 200, allow_search_mode=True)
+
+		assert "maximum" in str(exception_info.value)
+
+	async def test_shrinking_overwrite_in_project_already_over_cap_is_admitted(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.projects[PROJECT]["_max_knowledge_size"] = 100
+		api.add_document(PROJECT, "notes.md", "a" * 150)
+
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.md", content="a" * 20, overwrite=True)
+
+		assert result["action"] == "replaced"
+		assert api.content_of(PROJECT, "notes.md") == ["a" * 20]
+
+	async def test_small_growing_write_in_project_already_in_search_mode(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "big.md", "a" * 60)
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "write_document", project_id=PROJECT, file_name="small.md", content="hello")
+
+		assert "already past" in str(exception_info.value)
+
+	async def test_rollback_delete_fails_reports_done_with_warning(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "notes.md", "a" * 40)
+		# Fail the delete of the newly created document during rollback of refused write
+		api.fail_once("DELETE", r"/docs/[^/]+$", ApiError("500", status=500))
+
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.md", content="a" * 60, overwrite=True)
+
+		assert "could not be undone" in result["warning"]
+		assert len(api.documents[PROJECT]) == 2
+
+	async def test_kb_stats_404_warns_capacity_not_checked(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = None
+		api.projects[PROJECT]["_max_knowledge_size"] = None
+
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.md", content="hello")
+
+		assert "knowledge" not in result
+		assert "Capacity was not checked" in result["warning"]
 
 
 class TestRenameDocument:

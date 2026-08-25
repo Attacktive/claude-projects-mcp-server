@@ -16,7 +16,7 @@ from mcp_types import ToolAnnotations
 from .backup import BackupStore
 from .client import ClaudeProjectsClient, looks_like_uuid
 from .config import Settings
-from .errors import ClaudeProjectsError
+from .errors import ClaudeProjectsError, NotFoundError
 from .models import Document, Project
 from .results import with_warning
 from .scheduled import register as register_scheduled_tools
@@ -33,6 +33,13 @@ so delete_project needs the project's name typed back and backs everything up fi
 For more than a couple of edits, prefer pull_documents to a folder, edit the files with normal
 tools, then push_documents back — it is far cheaper than moving whole documents through tool
 calls one at a time.
+
+A project's knowledge has two lines, both reported by list_documents: a search threshold, past
+which Claude in the web UI retrieves from the knowledge instead of reading all of it, and a
+maximum, past which the web UI refuses uploads.
+The API enforces neither, so write_document and push_documents do: a write that would grow
+the project past a line is undone and refused, naming the documents most worth compacting.
+allow_search_mode=true accepts the threshold; nothing accepts the maximum.
 
 Scheduled tasks run prompts against a project on a cron schedule. Those schedules are in UTC,
 not local time, and pausing a task with enabled=false is nearly always better than deleting it.
@@ -180,11 +187,15 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
-		description="List the documents in a project. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up.",
+		description="List the documents in a project. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
 	)
 	def list_documents(project_id: str) -> dict:
 		with translated():
 			documents = client.list_documents(project_id)
+			try:
+				stats = client.knowledge_stats(project_id)
+			except NotFoundError:
+				stats = None
 
 		seen, duplicates = set(), []
 		for document in documents:
@@ -193,7 +204,13 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 
 			seen.add(document.file_name)
 
-		return {
+		warning = None
+		if stats is None:
+			warning = "Capacity was not checked: claude.ai did not report the project's knowledge size."
+		elif stats.size > stats.max_size:
+			warning = f"The project is past its maximum: {stats.size:,} of {stats.max_size:,} tokens. The web UI is refusing to add to the project knowledge until something is removed or compacted, and write_document will refuse any write that grows it."
+
+		body: dict = {
 			"project_id": project_id,
 			"documents": [
 				{
@@ -201,11 +218,21 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 					"file_name": document.file_name,
 					"created_at": document.created_at,
 					"characters": document.characters,
+					"estimated_token_count": document.estimated_token_count,
 				}
 				for document in documents
 			],
 			"duplicate_file_names": duplicates,
 		}
+		if stats is not None:
+			body["knowledge"] = {
+				"size": stats.size,
+				"search_threshold": stats.search_threshold,
+				"max_size": stats.max_size,
+				"search_mode": stats.search_mode,
+			}
+
+		return with_warning(body, warning)
 
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
@@ -224,6 +251,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 				"file_name": found.file_name,
 				"content": found.content,
 				"created_at": found.created_at,
+				"estimated_token_count": found.estimated_token_count,
 			},
 			warning,
 		)
@@ -232,7 +260,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Create a document, or replace one with overwrite=true. The previous content is backed up locally before any replacement. Pass expected_uuid (from read_document) to refuse the write if a teammate has saved since you read it. Relay any `warning` in the result to the user verbatim — it flags a leftover copy or a file name with no extension.",
+		description="Create a document, or replace one with overwrite=true. The previous content is backed up locally before any replacement. Pass expected_uuid (from read_document) to refuse the write if a teammate has saved since you read it. Refused when the write would grow the project past its search threshold or its maximum, naming the documents most worth compacting; allow_search_mode=true accepts the threshold, never the maximum. Relay any `warning` in the result to the user verbatim — it flags a leftover copy or a file name with no extension.",
 	)
 	def write_document(
 		project_id: str,
@@ -240,6 +268,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 		content: str,
 		overwrite: bool = False,
 		expected_uuid: str | None = None,
+		allow_search_mode: bool = False,
 	) -> dict:
 		with translated():
 			existing = client.find_documents_by_name(project_id, file_name)
@@ -251,6 +280,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 				file_name,
 				content,
 				expected_uuid=expected_uuid,
+				allow_search_mode=allow_search_mode,
 				backup=backup_for(project_id),
 			)
 
@@ -258,15 +288,37 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 		if result.failed_delete_uuids:
 			leftover = f"The new content is saved, but {len(result.failed_delete_uuids)} older copy could not be removed and remains as a duplicate: {', '.join(result.failed_delete_uuids)}. The next write with overwrite=true will clean it up."
 
+		capacity_warn = None
+		if result.knowledge is None:
+			capacity_warn = "Capacity was not checked: claude.ai did not report the project's knowledge size. The write went ahead; check list_documents for where the project stands."
+		elif result.rollback_failed:
+			old_uuid = existing[0].uuid if existing else "unknown"
+			line_name = "its maximum" if result.knowledge.size > result.knowledge.max_size else "its search threshold"
+			line_limit = result.knowledge.max_size if result.knowledge.size > result.knowledge.max_size else result.knowledge.search_threshold
+			capacity_warn = f"This write took the project past {line_name} ({result.knowledge.size:,} of {line_limit:,} tokens) and could not be undone: deleting the new document {result.uuid} failed. The previous {result.file_name!r} ({old_uuid}) was left in place, so two documents now share the name. Remove one with delete_document, then compact."
+		elif result.entered_search_mode:
+			capacity_warn = (
+				f"The project is in search mode: {result.knowledge.size:,} of {result.knowledge.search_threshold:,} tokens. Claude in the web UI now retrieves from the project knowledge instead of reading all of it, so a document can go unseen; compact something with write_document overwrite=true to leave it."
+			)
+
+		body: dict = {
+			"action": result.action,
+			"uuid": result.uuid,
+			"file_name": result.file_name,
+			"replaced_uuids": result.replaced_uuids,
+			"backup_path": result.backup_path,
+		}
+		if result.knowledge is not None:
+			body["knowledge"] = {
+				"size": result.knowledge.size,
+				"search_threshold": result.knowledge.search_threshold,
+				"max_size": result.knowledge.max_size,
+				"search_mode": result.knowledge.search_mode,
+			}
+
 		return with_warning(
-			{
-				"action": result.action,
-				"uuid": result.uuid,
-				"file_name": result.file_name,
-				"replaced_uuids": result.replaced_uuids,
-				"backup_path": result.backup_path,
-			},
-			_joined(leftover, _extension_warning(result.file_name)),
+			body,
+			_joined(leftover, _extension_warning(result.file_name), capacity_warn),
 		)
 
 	@server.tool(
@@ -338,7 +390,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Upload a local folder's files into the project. Unchanged files are skipped, differing ones need overwrite=true, and remote documents missing locally are never deleted. Use dry_run=true to preview.",
+		description="Upload a local folder's files into the project. Unchanged files are skipped, differing ones need overwrite=true, and remote documents missing locally are never deleted. Use dry_run=true to preview. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
 	)
 	def push_documents(
 		project_id: str,
@@ -346,6 +398,7 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 		pattern: str = "*.md",
 		overwrite: bool = False,
 		dry_run: bool = False,
+		allow_search_mode: bool = False,
 	) -> dict:
 		try:
 			with translated():
@@ -356,17 +409,27 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 					pattern=pattern,
 					overwrite=overwrite,
 					dry_run=dry_run,
+					allow_search_mode=allow_search_mode,
 					backup=backup_for(project_id),
 				)
 		except FileNotFoundError as exception:
 			raise ToolError(str(exception)) from exception
 
-		return {
-			"project_id": project_id,
-			"dry_run": dry_run,
-			"results": [_result_dict(result) for result in results],
-			"summary": summarise(results),
-		}
+		warning = None
+		for res in results:
+			if res.status == "refused_full" and res.detail:
+				warning = res.detail
+				break
+
+		return with_warning(
+			{
+				"project_id": project_id,
+				"dry_run": dry_run,
+				"results": [_result_dict(result) for result in results],
+				"summary": summarise(results),
+			},
+			warning,
+		)
 
 	# ------------------------------------------------------- scheduled tasks
 

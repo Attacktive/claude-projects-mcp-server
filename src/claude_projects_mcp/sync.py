@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .client import ClaudeProjectsClient
-from .errors import ClaudeProjectsError
+from .errors import ClaudeProjectsError, KnowledgeFullError
 from .filenames import deduplicate, safe_child, sanitize
 from .models import Document
 
@@ -97,6 +97,7 @@ def push(
 	pattern: str = "*.md",
 	overwrite: bool = False,
 	dry_run: bool = False,
+	allow_search_mode: bool = False,
 	backup: Callable[[str, str], str] | None = None,
 ) -> list[FileResult]:
 	"""Upload `source_directory`'s files into the project.
@@ -110,12 +111,15 @@ def push(
 
 	remote = _index_by_name(client.list_documents(project_id))
 
+	matching_paths = [path for path in sorted(source.glob(pattern)) if path.is_file()]
 	results = []
-	for path in sorted(source.glob(pattern)):
-		if not path.is_file():
-			continue
-
-		results.append(_push_one(client, project_id, path, remote, overwrite, dry_run, backup))
+	for index, path in enumerate(matching_paths):
+		res = _push_one(client, project_id, path, remote, overwrite, dry_run, allow_search_mode, backup)
+		results.append(res)
+		if res.status == "refused_full":
+			for remaining in matching_paths[index + 1 :]:
+				results.append(FileResult(remaining.name, "skipped_full", local_path=str(remaining), detail="not attempted: the project has no room"))
+			break
 
 	return results
 
@@ -127,6 +131,7 @@ def _push_one(
 	remote: dict[str, Document],
 	overwrite: bool,
 	dry_run: bool,
+	allow_search_mode: bool,
 	backup: Callable[[str, str], str] | None,
 ) -> FileResult:
 	name = path.name
@@ -144,7 +149,7 @@ def _push_one(
 			if dry_run:
 				return FileResult(name, "created", local_path=str(path), detail="dry run")
 
-			client.create_document(project_id, name, content)
+			client.save_document(project_id, name, content, replacing=[], allow_search_mode=allow_search_mode)
 			return FileResult(name, "created", local_path=str(path))
 
 		if existing.is_stub:
@@ -164,12 +169,14 @@ def _push_one(
 		if dry_run:
 			return FileResult(name, "replaced", local_path=str(path), detail="dry run")
 
-		result = client.replace_document(project_id, name, content, backup=backup)
+		result = client.replace_document(project_id, name, content, allow_search_mode=allow_search_mode, backup=backup)
 		detail = None
 		if result.failed_delete_uuids:
 			detail = f"saved, but {len(result.failed_delete_uuids)} old copy could not be removed and remains as a duplicate"
 
 		return FileResult(name, "replaced", local_path=str(path), detail=detail, backup_path=result.backup_path)
+	except KnowledgeFullError as exception:
+		return FileResult(name, "refused_full", local_path=str(path), detail=str(exception))
 	except (ClaudeProjectsError, OSError) as exception:
 		return FileResult(name, "error", local_path=str(path), detail=str(exception))
 

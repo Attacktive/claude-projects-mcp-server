@@ -219,3 +219,32 @@ class TestPush:
 
 	def test_an_empty_directory_yields_no_results(self, client, tmp_path):
 		assert push(client, PROJECT, tmp_path) == []
+
+	def test_push_stops_at_first_file_exceeding_capacity(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
+		(tmp_path / "c.md").write_text("c" * 10, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path)
+
+		assert statuses(results) == {
+			"a.md": "created",
+			"b.md": "refused_full",
+			"c.md": "skipped_full",
+		}
+		assert api.document_names(PROJECT) == ["a.md"]
+
+	def test_push_with_allow_search_mode_succeeds(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
+		(tmp_path / "c.md").write_text("c" * 10, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, allow_search_mode=True)
+
+		assert statuses(results) == {
+			"a.md": "created",
+			"b.md": "created",
+			"c.md": "created",
+		}

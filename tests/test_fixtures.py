@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_projects_mcp.models import Document, Organization, Project, ScheduledTask
+from claude_projects_mcp.models import Document, KnowledgeStats, Organization, Project, ScheduledTask
 
 from .fake_transport import FakeClaudeProjectsApi
 
@@ -80,6 +80,13 @@ class TestRealResponsesParse:
 
 	def test_scheduled_task_created(self):
 		assert ScheduledTask.parse_trigger(load("scheduled_task_created")).id
+
+	def test_kb_stats(self):
+		stats = KnowledgeStats.parse(load("kb_stats"))
+		assert stats.size == 3229
+		assert stats.max_size == 2000000
+		assert stats.search_threshold == 50000
+		assert stats.search_mode is False
 
 
 class TestFakeMatchesReality:

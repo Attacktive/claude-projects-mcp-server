@@ -23,6 +23,7 @@ _PROJECTS_V2 = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects_v2$
 _PROJECT = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)$")
 _DOCUMENTS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/docs$")
 _DOCUMENT = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/docs/(?P<document>[^/]+)$")
+_KNOWLEDGE_STATS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/kb/stats$")
 _SCHEDULED_TASKS = re.compile(r"^/organizations/(?P<organization>[^/]+)/cowork/scheduled_tasks$")
 _SCHEDULED_TASK = re.compile(r"^/organizations/(?P<organization>[^/]+)/cowork/scheduled_tasks/(?P<task>[^/]+)$")
 
@@ -66,6 +67,8 @@ class FakeClaudeProjectsApi:
 		description: str = "",
 		instructions: str = "",
 		is_private: bool = False,
+		search_threshold: int | None = 50_000,
+		max_knowledge_size: int | None = 2_000_000,
 	) -> str:
 		self.projects[uuid] = {
 			"uuid": uuid,
@@ -76,6 +79,8 @@ class FakeClaudeProjectsApi:
 			"created_at": self._stamp(),
 			"updated_at": self._stamp(),
 			"_organization": organization_uuid,
+			"_search_threshold": search_threshold,
+			"_max_knowledge_size": max_knowledge_size,
 		}
 		self.documents.setdefault(uuid, [])
 		return uuid
@@ -185,6 +190,24 @@ class FakeClaudeProjectsApi:
 		match = _DOCUMENT.match(path)
 		if match:
 			return self._public_document(self._find_document(match["project"], match["document"]), with_content=True)
+
+		match = _KNOWLEDGE_STATS.match(path)
+		if match:
+			project = self._find_project(match["project"])
+			search_threshold = project["_search_threshold"]
+			max_knowledge_size = project["_max_knowledge_size"]
+			if search_threshold is None or max_knowledge_size is None:
+				raise NotFoundError(f"No kb stats for project {match['project']}")
+
+			docs = self.documents.get(match["project"], [])
+			knowledge_size = sum(len(doc["content"]) for doc in docs if doc.get("content") is not None)
+			use_search = knowledge_size > search_threshold
+			return {
+				"knowledge_size": knowledge_size,
+				"max_knowledge_size": max_knowledge_size,
+				"project_knowledge_search_threshold": search_threshold,
+				"use_project_knowledge_search": use_search,
+			}
 
 		match = _SCHEDULED_TASKS.match(path)
 		if match:
@@ -411,6 +434,10 @@ class FakeClaudeProjectsApi:
 	@staticmethod
 	def _public_document(document: dict, with_content: bool) -> dict:
 		public = dict(document)
+		content = public.get("content")
+		if content is not None:
+			public["estimated_token_count"] = len(content)
+
 		if not with_content:
 			del public["content"]
 

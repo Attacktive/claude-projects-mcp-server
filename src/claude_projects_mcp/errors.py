@@ -82,3 +82,14 @@ class ConcurrentEditError(ClaudeProjectsError):
 		self.file_name = file_name
 		self.expected_uuid = expected_uuid
 		self.actual_uuid = actual_uuid
+
+
+class KnowledgeFullError(ClaudeProjectsError):
+	"""A write was refused because the project knowledge capacity or search threshold was exceeded."""
+
+	def __init__(self, message: str, file_name: str, verdict: str, projected: int, limit: int):
+		super().__init__(message)
+		self.file_name = file_name
+		self.verdict = verdict
+		self.projected = projected
+		self.limit = limit

@@ -102,11 +102,29 @@ class Project:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeStats:
+	size: int
+	max_size: int
+	search_threshold: int
+	search_mode: bool
+
+	@classmethod
+	def parse(cls, raw: Any) -> Self:
+		return cls(
+			size=_require(raw, "knowledge_size", "KnowledgeStats"),
+			max_size=_require(raw, "max_knowledge_size", "KnowledgeStats"),
+			search_threshold=_require(raw, "project_knowledge_search_threshold", "KnowledgeStats"),
+			search_mode=bool(_require(raw, "use_project_knowledge_search", "KnowledgeStats")),
+		)
+
+
+@dataclass(frozen=True, slots=True)
 class Document:
 	uuid: str
 	file_name: str
 	content: str | None = None
 	created_at: str | None = None
+	estimated_token_count: int | None = None
 
 	@classmethod
 	def parse(cls, raw: Any) -> Self:
@@ -115,6 +133,7 @@ class Document:
 			file_name=_require(raw, "file_name", "Document"),
 			content=raw.get("content"),
 			created_at=raw.get("created_at"),
+			estimated_token_count=raw.get("estimated_token_count"),
 		)
 
 	@classmethod

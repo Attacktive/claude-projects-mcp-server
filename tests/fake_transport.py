@@ -201,12 +201,12 @@ class FakeClaudeProjectsApi:
 
 			documents = self.documents.get(match["project"], [])
 			knowledge_size = sum(len(document["content"]) for document in documents if document.get("content") is not None)
-			use_search = knowledge_size > search_threshold
+			search_mode = knowledge_size > search_threshold
 			return {
 				"knowledge_size": knowledge_size,
 				"max_knowledge_size": max_knowledge_size,
 				"project_knowledge_search_threshold": search_threshold,
-				"use_project_knowledge_search": use_search,
+				"use_project_knowledge_search": search_mode,
 			}
 
 		match = _SCHEDULED_TASKS.match(path)

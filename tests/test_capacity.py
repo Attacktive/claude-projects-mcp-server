@@ -36,20 +36,20 @@ def test_judge_shrinks_while_over_the_cap():
 
 
 def test_candidates_excludes_written_file_and_limits_to_three():
-	docs = [
+	documents = [
 		Document(uuid="1", file_name="notes.md", estimated_token_count=100, created_at="2026-01-01T00:00:00Z"),
 		Document(uuid="2", file_name="doc1.md", estimated_token_count=1000, created_at="2026-02-01T00:00:00Z"),
 		Document(uuid="3", file_name="doc2.md", estimated_token_count=2000, created_at="2026-03-01T00:00:00Z"),
 		Document(uuid="4", file_name="doc3.md", estimated_token_count=3000, created_at="2026-04-01T00:00:00Z"),
 		Document(uuid="5", file_name="doc4.md", estimated_token_count=4000, created_at="2026-05-01T00:00:00Z"),
 	]
-	cands = candidates(docs, excluding="notes.md")
-	assert len(cands) == 3
-	assert [c.file_name for c in cands] == ["doc4.md", "doc3.md", "doc2.md"]
+	result = candidates(documents, excluding="notes.md")
+	assert len(result) == 3
+	assert [candidate.file_name for candidate in result] == ["doc4.md", "doc3.md", "doc2.md"]
 
 
 def test_candidates_orders_duplicates_first_and_handles_ties_by_age():
-	docs = [
+	documents = [
 		# Non-duplicate large
 		Document(uuid="1", file_name="large.md", estimated_token_count=10_000, created_at="2026-05-01T00:00:00Z"),
 		# Duplicate copies of dup.md: newest (uuid=3), older (uuid=2)
@@ -59,32 +59,32 @@ def test_candidates_orders_duplicates_first_and_handles_ties_by_age():
 		Document(uuid="4", file_name="newer.md", estimated_token_count=5_000, created_at="2026-04-01T00:00:00Z"),
 		Document(uuid="5", file_name="older.md", estimated_token_count=5_000, created_at="2026-03-01T00:00:00Z"),
 	]
-	cands = candidates(docs, excluding="written.md")
+	result = candidates(documents, excluding="written.md")
 	# Candidates:
 	# 1. dup.md (uuid=2, duplicate=True, tokens=1000)
 	# 2. large.md (duplicate=False, tokens=10000)
 	# 3. older.md (duplicate=False, tokens=5000, created 2026-03-01)
-	assert cands[0].uuid == "2"
-	assert cands[0].duplicate is True
-	assert cands[1].file_name == "large.md"
-	assert cands[2].file_name == "older.md"
+	assert result[0].uuid == "2"
+	assert result[0].duplicate is True
+	assert result[1].file_name == "large.md"
+	assert result[2].file_name == "older.md"
 
 
 def test_refusal_crossing_threshold():
 	# Before write: 61,141 - 12,400 = 48,741 (under threshold)
 	stats = KnowledgeStats(size=61_141, max_size=2_000_000, search_threshold=50_000, search_mode=True)
-	cands = [
+	compaction_candidates = [
 		Candidate(file_name="design-notes.md", uuid="1", estimated_token_count=31_200, created_at="2026-05-02T00:00:00Z", duplicate=False),
 		Candidate(file_name="meeting-log.md", uuid="2", estimated_token_count=9_800, created_at="2026-07-19T00:00:00Z", duplicate=True),
 		Candidate(file_name="glossary.md", uuid="3", estimated_token_count=4_100, created_at="2026-08-01T00:00:00Z", duplicate=False),
 	]
-	msg = refusal(
+	message = refusal(
 		file_name="notes.md",
 		verdict="search_mode",
 		stats=stats,
 		projected=61_141,
 		added=12_400,
-		candidates_list=cands,
+		candidates_list=compaction_candidates,
 	)
 	expected = (
 		"Writing 'notes.md' (12,400 tokens) would push the project past its search threshold: 61,141 of 50,000 tokens, 11,141 over. "
@@ -96,13 +96,13 @@ def test_refusal_crossing_threshold():
 		"'glossary.md' (4,100 tokens, last rewritten 2026-08-01). "
 		"To accept search mode instead, pass allow_search_mode=true."
 	)
-	assert msg == expected
+	assert message == expected
 
 
 def test_refusal_already_past_threshold():
 	# Before write: 72,832 - 12,400 = 60,432 (already past threshold 50,000)
 	stats = KnowledgeStats(size=72_832, max_size=2_000_000, search_threshold=50_000, search_mode=True)
-	msg = refusal(
+	message = refusal(
 		file_name="notes.md",
 		verdict="search_mode",
 		stats=stats,
@@ -110,14 +110,14 @@ def test_refusal_already_past_threshold():
 		added=12_400,
 		candidates_list=[],
 	)
-	assert msg.startswith("The project is already past its search threshold (60,432 of 50,000 tokens), and writing 'notes.md' would add 12,400 more.")
-	assert "There is nothing else in the project to compact; shrink this content." in msg
-	assert msg.endswith("To accept search mode instead, pass allow_search_mode=true.")
+	assert message.startswith("The project is already past its search threshold (60,432 of 50,000 tokens), and writing 'notes.md' would add 12,400 more.")
+	assert "There is nothing else in the project to compact; shrink this content." in message
+	assert message.endswith("To accept search mode instead, pass allow_search_mode=true.")
 
 
 def test_refusal_crossing_maximum():
 	stats = KnowledgeStats(size=2_050_000, max_size=2_000_000, search_threshold=50_000, search_mode=True)
-	msg = refusal(
+	message = refusal(
 		file_name="huge.md",
 		verdict="over_max",
 		stats=stats,
@@ -125,6 +125,6 @@ def test_refusal_crossing_maximum():
 		added=60_000,
 		candidates_list=[],
 	)
-	assert "would push the project past its maximum" in msg
-	assert "Past that line the web UI refuses to add anything to the project knowledge until something is removed." in msg
-	assert "allow_search_mode=true" not in msg
+	assert "would push the project past its maximum" in message
+	assert "Past that line the web UI refuses to add anything to the project knowledge until something is removed." in message
+	assert "allow_search_mode=true" not in message

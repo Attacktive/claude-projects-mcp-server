@@ -262,6 +262,7 @@ def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 			],
 			"duplicate_file_names": _find_duplicates(documents),
 		}
+
 		if stats is not None:
 			body["knowledge"] = {
 				"size": stats.size,
@@ -363,6 +364,7 @@ def _register_write_document(server: MCPServer, client: ClaudeProjectsClient, ba
 			"replaced_uuids": result.replaced_uuids,
 			"backup_path": result.backup_path,
 		}
+
 		if result.knowledge is not None:
 			body["knowledge"] = {
 				"size": result.knowledge.size,

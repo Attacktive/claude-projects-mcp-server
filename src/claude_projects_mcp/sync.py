@@ -128,6 +128,7 @@ def push(
 		if result.status in ("refused_full", "written_over_capacity"):
 			for remaining in matching_paths[index + 1 :]:
 				results.append(FileResult(remaining.name, "skipped_full", local_path=str(remaining), detail="not attempted: the project has no room"))
+
 			break
 
 	return results

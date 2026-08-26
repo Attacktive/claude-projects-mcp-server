@@ -602,6 +602,7 @@ class ClaudeProjectsClient:
 			search_threshold=context.stats.search_threshold,
 			search_mode=final_size > context.stats.search_threshold,
 		)
+
 		entered_search_mode = (verdict == "search_mode") and allow_search_mode
 
 		return ReplaceResult(

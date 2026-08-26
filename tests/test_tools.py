@@ -297,9 +297,9 @@ class TestWriteDoc:
 		with pytest.raises(ToolError) as exception_info:
 			await call(server, "write_document", project_id=PROJECT, file_name="new.md", content="c" * 30)
 
-		msg = str(exception_info.value)
-		assert "search threshold" in msg
-		assert "'cand1.md'" in msg
+		message = str(exception_info.value)
+		assert "search threshold" in message
+		assert "'cand1.md'" in message
 		assert api.content_of(PROJECT, "new.md") == []
 		assert any(method == "DELETE" and f"/organizations/{ORGANIZATION}/projects/{PROJECT}/docs/" in path for method, path in api.log)
 
@@ -332,14 +332,15 @@ class TestWriteDoc:
 		assert api.content_of(PROJECT, "notes.md") == ["a" * 20]
 		assert "warning" not in result
 
-	async def test_502_on_kb_stats_succeeds_and_warns(self, api, client):
+	async def test_502_on_kb_stats_succeeds_and_warns(self, api, server):
 		api.add_document(PROJECT, "notes.md", "old content")
 		api.fail_once("GET", r"/kb/stats$", ApiError("claude.ai returned HTTP 502.", status=502))
 
-		result = client.replace_document(PROJECT, "notes.md", "new longer content")
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.md", content="new longer content", overwrite=True)
 
-		assert result.action == "replaced"
-		assert result.knowledge is None
+		assert result["action"] == "replaced"
+		assert "knowledge" not in result
+		assert "Capacity was not checked" in result["warning"]
 		assert api.content_of(PROJECT, "notes.md") == ["new longer content"]
 
 	async def test_write_crossing_threshold_refusal_candidate_ordering(self, api, server):
@@ -352,10 +353,10 @@ class TestWriteDoc:
 			await call(server, "write_document", project_id=PROJECT, file_name="new.md", content="c" * 80)
 
 		message = str(exception_info.value)
-		dup_index = message.find("dup.md")
+		duplicate_index = message.find("dup.md")
 		large_index = message.find("large.md")
-		assert dup_index != -1 and large_index != -1
-		assert dup_index < large_index
+		assert duplicate_index != -1 and large_index != -1
+		assert duplicate_index < large_index
 
 	async def test_small_growing_write_in_project_already_in_search_mode(self, api, server):
 		api.projects[PROJECT]["_search_threshold"] = 50

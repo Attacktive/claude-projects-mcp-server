@@ -20,7 +20,7 @@ from .errors import ClaudeProjectsError, NotFoundError
 from .models import Document, KnowledgeStats, Project
 from .results import with_warning
 from .scheduled import register as register_scheduled_tools
-from .sync import FileResult, pull, push, summarise
+from .sync import FileResult, PushOptions, pull, push, summarise
 from .transport import CurlCffiTransport
 
 _INSTRUCTIONS = """Read and write Claude Cowork / claude.ai projects and their knowledge documents.
@@ -473,15 +473,18 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 	) -> dict:
 		try:
 			with translated():
+				options = PushOptions(
+					overwrite=overwrite,
+					dry_run=dry_run,
+					allow_search_mode=allow_search_mode,
+					backup=_backup_for(backups, project_id),
+				)
 				results = push(
 					client,
 					project_id,
 					Path(source_directory),
 					pattern=pattern,
-					overwrite=overwrite,
-					dry_run=dry_run,
-					allow_search_mode=allow_search_mode,
-					backup=_backup_for(backups, project_id),
+					options=options,
 				)
 		except FileNotFoundError as exception:
 			raise ToolError(str(exception)) from exception

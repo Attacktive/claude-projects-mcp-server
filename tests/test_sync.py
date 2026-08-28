@@ -1,6 +1,6 @@
 import pytest
 
-from claude_projects_mcp.sync import pull, push
+from claude_projects_mcp.sync import PushOptions, pull, push
 
 from .conftest import PROJECT
 
@@ -136,7 +136,7 @@ class TestPush:
 		api.add_document(PROJECT, "notes.md", "remote version")
 		(tmp_path / "notes.md").write_text("local version", encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, overwrite=True)
+		results = push(client, PROJECT, tmp_path, options=PushOptions(overwrite=True))
 
 		assert statuses(results) == {"notes.md": "replaced"}
 		assert api.content_of(PROJECT, "notes.md") == ["local version"]
@@ -150,7 +150,7 @@ class TestPush:
 			saved.append((file_name, content))
 			return f"/backups/{file_name}"
 
-		push(client, PROJECT, tmp_path, overwrite=True, backup=backup)
+		push(client, PROJECT, tmp_path, options=PushOptions(overwrite=True, backup=backup))
 
 		assert saved == [("notes.md", "remote version")]
 
@@ -195,7 +195,7 @@ class TestPush:
 		(tmp_path / "existing.md").write_text("changed", encoding="utf-8")
 		(tmp_path / "new.md").write_text("brand new", encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, overwrite=True, dry_run=True)
+		results = push(client, PROJECT, tmp_path, options=PushOptions(overwrite=True, dry_run=True))
 
 		assert statuses(results) == {"existing.md": "replaced", "new.md": "created"}
 		assert "POST" not in api.methods_logged()
@@ -241,7 +241,7 @@ class TestPush:
 		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
 		(tmp_path / "c.md").write_text("c" * 10, encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, allow_search_mode=True)
+		results = push(client, PROJECT, tmp_path, options=PushOptions(allow_search_mode=True))
 
 		assert statuses(results) == {
 			"a.md": "created",

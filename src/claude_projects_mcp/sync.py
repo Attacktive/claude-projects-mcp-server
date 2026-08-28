@@ -103,10 +103,7 @@ def push(
 	project_id: str,
 	source_directory: Path | str,
 	pattern: str = "*.md",
-	overwrite: bool = False,
-	dry_run: bool = False,
-	allow_search_mode: bool = False,
-	backup: Callable[[str, str], str] | None = None,
+	options: PushOptions | None = None,
 ) -> list[FileResult]:
 	"""Upload `source_directory`'s files into the project.
 
@@ -117,13 +114,13 @@ def push(
 	if not source.is_dir():
 		raise FileNotFoundError(f"No such directory: {source}")
 
+	push_options = options or PushOptions()
 	remote = _index_by_name(client.list_documents(project_id))
-	options = PushOptions(overwrite=overwrite, dry_run=dry_run, allow_search_mode=allow_search_mode, backup=backup)
 
 	matching_paths = [path for path in sorted(source.glob(pattern)) if path.is_file()]
 	results = []
 	for index, path in enumerate(matching_paths):
-		result = _push_one(client, project_id, path, remote, options)
+		result = _push_one(client, project_id, path, remote, push_options)
 		results.append(result)
 		if result.status in ("refused_full", "written_over_capacity"):
 			for remaining in matching_paths[index + 1 :]:

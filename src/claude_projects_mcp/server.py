@@ -479,6 +479,7 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 					allow_search_mode=allow_search_mode,
 					backup=_backup_for(backups, project_id),
 				)
+
 				results = push(
 					client,
 					project_id,

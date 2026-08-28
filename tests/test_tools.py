@@ -541,6 +541,23 @@ class TestPushDocs:
 		assert api.document_names(PROJECT) == []
 		assert result["summary"] == {"created": 1}
 
+	async def test_overwriting_backs_up_the_replaced_content(self, api, server, tmp_path):
+		"""The backup callable reaches push() through PushOptions, and nothing else covers that wire end to end."""
+
+		api.add_document(PROJECT, "notes.md", "the old text")
+		source = tmp_path / "docs"
+		source.mkdir()
+		(source / "notes.md").write_text("the new text", encoding="utf-8")
+
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(source), overwrite=True)
+
+		assert result["summary"] == {"replaced": 1}
+		assert api.content_of(PROJECT, "notes.md") == ["the new text"]
+
+		written = [path for path in (tmp_path / "trash").rglob("*") if path.is_file()]
+		assert len(written) == 1
+		assert written[0].read_text(encoding="utf-8") == "the old text"
+
 	async def test_a_missing_directory_is_a_tool_error(self, server, tmp_path):
 		with pytest.raises(ToolError) as exception_info:
 			await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path / "nope"))

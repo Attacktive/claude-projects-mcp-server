@@ -102,6 +102,7 @@ def push(
 	client: ClaudeProjectsClient,
 	project_id: str,
 	source_directory: Path | str,
+	*,
 	pattern: str = "*.md",
 	options: PushOptions | None = None,
 ) -> list[FileResult]:
@@ -114,13 +115,15 @@ def push(
 	if not source.is_dir():
 		raise FileNotFoundError(f"No such directory: {source}")
 
-	push_options = options or PushOptions()
+	if options is None:
+		options = PushOptions()
+
 	remote = _index_by_name(client.list_documents(project_id))
 
 	matching_paths = [path for path in sorted(source.glob(pattern)) if path.is_file()]
 	results = []
 	for index, path in enumerate(matching_paths):
-		result = _push_one(client, project_id, path, remote, push_options)
+		result = _push_one(client, project_id, path, remote, options)
 		results.append(result)
 		if result.status in ("refused_full", "written_over_capacity"):
 			for remaining in matching_paths[index + 1 :]:

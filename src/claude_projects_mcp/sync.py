@@ -2,6 +2,8 @@
 
 Claude Code is file-native: pulling once, editing with ordinary tools, and pushing backbeats pushing whole documents through tool calls one at a time.
 
+Both directions see text documents only: a file uploaded through the web UI is not in the documents listing, so a pull-and-push copy is not a full migration.
+
 Both directions are deliberately conservative.
 Neither deletes anything the other side is missing, and neither overwrites differing content without being asked.
 """
@@ -47,7 +49,7 @@ def pull(
 	destination_directory: Path | str,
 	overwrite_local: bool = False,
 ) -> list[FileResult]:
-	"""Copy the project's documents into `destination_directory`.
+	"""Copy the project's text documents into `destination_directory`.
 
 	Local files that differ are kept, not clobbered — someone editing locally should not lose that work to a routine pull.
 	Pass `overwrite_local` to take the remote version.

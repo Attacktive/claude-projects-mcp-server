@@ -28,11 +28,16 @@ _INSTRUCTIONS = """Read and write Claude Cowork / claude.ai projects and their k
 These are shared team documents with no server-side undo, so writes are deliberately
 cautious: replacing an existing document requires overwrite=true, and the previous
 content is backed up locally first. Deleting a whole project takes every document in it,
-so delete_project needs the project's name typed back and backs everything up first.
+so delete_project needs the project's name typed back and backs every text document up first.
 
 For more than a couple of edits, prefer pull_documents to a folder, edit the files with normal
 tools, then push_documents back — it is far cheaper than moving whole documents through tool
 calls one at a time.
+
+Everything here sees text documents only. A file uploaded through the web UI, such as a PDF,
+counts toward the project's knowledge size but is never listed, pulled, pushed, or backed up,
+so a pull-and-push copy is not a full migration and delete_project destroys uploads with no
+backup. Before either, tell the user to check the project for uploads in the web UI.
 
 A project's knowledge has two lines, both reported by list_documents: a search threshold, past
 which Claude in the web UI retrieves from the knowledge instead of reading all of it, and a
@@ -192,7 +197,7 @@ def _register_update_project(server: MCPServer, client: ClaudeProjectsClient) ->
 def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
-		description="Delete a project and every document in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every document is copied to the local backup directory first; if that fails, nothing is deleted.",
+		description="Delete a project and everything in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every text document is copied to the local backup directory first; if that fails, nothing is deleted. Files uploaded through the web UI, such as PDFs, are invisible to this server and are destroyed with no backup, so have the user check the project for uploads in the web UI before calling this.",
 	)
 	def delete_project(project_id: str, confirm_name: str) -> dict:
 		with translated():
@@ -238,7 +243,7 @@ def _list_documents_warning(stats: KnowledgeStats | None) -> str | None:
 def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
-		description="List the documents in a project. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
+		description="List the text documents in a project. `knowledge` reports the project's size against its search threshold and its maximum; a file uploaded through the web UI, such as a PDF, counts toward it but is not listed. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
 	)
 	def list_documents(project_id: str) -> dict:
 		with translated():
@@ -434,7 +439,7 @@ def _register_delete_document(server: MCPServer, client: ClaudeProjectsClient, b
 def _register_pull_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=False),
-		description="Copy the project's documents into a local folder. Local files that differ are kept, not overwritten, unless overwrite_local=true.",
+		description="Copy the project's text documents into a local folder. Files uploaded through the web UI, such as PDFs, are not copied, so this is not a full export. Local files that differ are kept, not overwritten, unless overwrite_local=true.",
 	)
 	def pull_documents(project_id: str, destination_directory: str, overwrite_local: bool = False) -> dict:
 		try:
@@ -461,7 +466,7 @@ def _first_refused_warning(results: list[FileResult]) -> str | None:
 def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Upload a local folder's files into the project. Unchanged files are skipped, differing ones need overwrite=true, and remote documents missing locally are never deleted. Use dry_run=true to preview. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
+		description="Upload a local folder's text files into the project. Unchanged files are skipped, differing ones need overwrite=true, and remote documents missing locally are never deleted; the project's uploaded files are untouched and cannot be pushed. Use dry_run=true to preview. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
 	)
 	def push_documents(
 		project_id: str,

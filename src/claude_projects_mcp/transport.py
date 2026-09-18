@@ -5,7 +5,9 @@ That boundary is what keeps the claude.ai-specific auth swappable if an official
 """
 
 import json
+from collections.abc import Callable
 from typing import Any, Literal, Protocol
+from urllib.parse import urljoin, urlsplit
 
 from curl_cffi import requests
 
@@ -37,6 +39,13 @@ class Transport(Protocol):
 
 	def request(self, method: HttpMethod, path: str, *, json_body: dict | None = None) -> Any: ...
 
+	def request_bytes(self, url: str) -> bytes:
+		"""GET a host-relative URL, as the files listing hands them out, and return the body untouched.
+
+		Resolved against the base URL's origin rather than appended to its path: the URLs already start with the `/api` that the default base URL ends with.
+		"""
+		...
+
 	def close(self) -> None: ...
 
 
@@ -51,6 +60,11 @@ def redact(text: str, session_key: str) -> str:
 	import re
 
 	return re.sub(r"sk-ant-[A-Za-z0-9_-]+", "<redacted-session-key>", cleaned)
+
+
+def _origin_of(url: str) -> tuple[str, str]:
+	parts = urlsplit(url)
+	return parts.scheme.lower(), parts.netloc.lower()
 
 
 def _looks_like_html(body: str, content_type: str) -> bool:
@@ -91,8 +105,14 @@ class CurlCffiTransport:
 		)
 
 	def request(self, method: HttpMethod, path: str, *, json_body: dict | None = None) -> Any:
+		return self._with_cold_retry(lambda: self._send(method, path, json_body=json_body))
+
+	def request_bytes(self, url: str) -> bytes:
+		return self._with_cold_retry(lambda: self._send_bytes(url))
+
+	def _with_cold_retry(self, send: Callable[[], Any]) -> Any:
 		try:
-			return self._send(method, path, json_body=json_body)
+			return send()
 		except CloudflareBlockedError:
 			if self._established:
 				raise
@@ -101,12 +121,35 @@ class CurlCffiTransport:
 			# The retry rides the connection that the challenge itself set up.
 			# Replaying a write is safe here precisely because a challenge page means Cloudflare answered instead of the API, so nothing was created or deleted.
 			# That reasoning holds only for this error: no other failure may be retried.
-			return self._send(method, path, json_body=json_body)
+			return send()
 
 	def _send(self, method: HttpMethod, path: str, *, json_body: dict | None = None) -> Any:
-		url = f"{self._base_url}{path}"
+		response = self._perform(method, f"{self._base_url}{path}", json=json_body)
+		self._check_status(response)
+		return self._decode_json(response)
+
+	def _send_bytes(self, url: str) -> bytes:
+		# The files listing hands out host-relative URLs that already start with the `/api` the base URL ends with (observed 2026-09-18), so they resolve against the origin rather than appending to the path.
+		resolved = urljoin(self._base_url, url)
+
+		# The session cookie rides every request this session makes, so a listing that ever hands out a foreign URL must not be followed with it.
+		if _origin_of(resolved) != _origin_of(self._base_url):
+			raise ApiError(f"Refusing to fetch {url!r}: it is on a different origin from {self._base_url}, and the session key must not travel there.", status=0)
+
+		# The session's Accept header asks for JSON, which is not what a PDF is.
+		response = self._perform("GET", resolved, headers={"Accept": "*/*"})
+		self._check_status(response)
+
+		# A stale session can be answered with a 200 login page; as a file, that would be backed up in place of the real one.
+		content = response.content
+		if _looks_like_html(content[:200].decode("utf-8", errors="replace"), response.headers.get("content-type", "")):
+			raise ApiError("Expected a file from claude.ai but got an HTML page. This usually means a login or interstitial page was served instead of the file; the session key may have expired.", status=response.status_code)
+
+		return content
+
+	def _perform(self, method: HttpMethod, url: str, **options: Any) -> Any:
 		try:
-			response = self._session.request(method, url, json=json_body, timeout=30)
+			return self._session.request(method, url, timeout=30, **options)
 		except ClaudeProjectsError:
 			raise
 		except Exception as exception:
@@ -115,22 +158,23 @@ class CurlCffiTransport:
 				status=0,
 			) from exception
 
-		return self._handle(response)
-
 	def close(self) -> None:
 		self._session.close()
 
 	def _safe(self, text: str) -> str:
 		return redact(text, self._session_key)[:_MAX_BODY_CHARACTERS]
 
-	def _handle(self, response: Any) -> Any:
+	def _check_status(self, response: Any) -> None:
+		"""Raise the typed error for any status that is not a success, and mark the connection proven otherwise.
+
+		The body is only decoded as text on an error, so a successful download never pays for decoding a binary as UTF-8.
+		"""
 		status = response.status_code
 		content_type = response.headers.get("content-type", "")
-		body = self._safe(response.text or "")
 
 		# An HTML body on a 401/403 is a challenge page: Cloudflare answered instead of the API.
 		# A JSON body means the API answered, so it is about the credential.
-		if status in (401, 403) and _looks_like_html(body, content_type):
+		if status in (401, 403) and _looks_like_html(self._safe(response.text or ""), content_type):
 			# On a cold connection the first challenge never escapes — `request` retries it — so the cold message can honestly say "twice in a row".
 			if self._established:
 				raise CloudflareBlockedError(_CLOUDFLARE_HELP_ESTABLISHED.format(status=status))
@@ -153,18 +197,20 @@ class CurlCffiTransport:
 			)
 
 		if status >= 400:
-			raise ApiError(f"claude.ai returned HTTP {status}.", status=status, body=body)
+			raise ApiError(f"claude.ai returned HTTP {status}.", status=status, body=self._safe(response.text or ""))
 
+	def _decode_json(self, response: Any) -> Any:
 		if not response.text or not response.text.strip():
 			return None
 
 		try:
 			return json.loads(response.text)
 		except ValueError as exception:
+			content_type = response.headers.get("content-type", "")
 			raise ApiError(
 				f"Expected JSON from claude.ai but got {content_type or 'an unparseable body'}. This usually means an interstitial or login page was served instead of the API.",
-				status=status,
-				body=body,
+				status=response.status_code,
+				body=self._safe(response.text or ""),
 			) from exception
 
 

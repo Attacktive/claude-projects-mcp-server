@@ -1,7 +1,7 @@
 import pytest
 
 from claude_projects_mcp.errors import ApiError
-from claude_projects_mcp.models import Document, Organization, Project
+from claude_projects_mcp.models import Document, Organization, Project, UploadedFile
 
 
 class TestOrg:
@@ -129,3 +129,81 @@ def test_parse_list_builds_each_item():
 	)
 
 	assert [document.uuid for document in documents] == ["d1", "d2"]
+
+
+class TestUploadedFile:
+	def test_parses_the_fields_it_needs(self):
+		upload = UploadedFile.parse(
+			{
+				"uuid": "file-1",
+				"file_uuid": "file-1",
+				"file_name": "report.pdf",
+				"file_kind": "document",
+				"created_at": "2026-08-06T04:17:33.022454Z",
+				"size_bytes": 1054702,
+				"preview_asset": None,
+				"document_asset": {"url": "/api/organization-1/files/file-1/document_pdf", "file_variant": "original", "page_count": 7, "token_count": None},
+				"unknown": "ignored",
+			}
+		)
+
+		assert upload.uuid == "file-1"
+		assert upload.file_name == "report.pdf"
+		assert upload.file_kind == "document"
+		assert upload.created_at == "2026-08-06T04:17:33.022454Z"
+		assert upload.size_bytes == 1054702
+		assert upload.page_count == 7
+		assert upload.download_url == "/api/organization-1/files/file-1/document_pdf"
+
+	def test_falls_back_to_file_uuid_when_uuid_is_absent(self):
+		upload = UploadedFile.parse({"file_uuid": "file-1", "file_name": "report.pdf"})
+
+		assert upload.uuid == "file-1"
+
+	def test_a_missing_identifier_fails_loudly(self):
+		with pytest.raises(ApiError):
+			UploadedFile.parse({"file_name": "report.pdf"})
+
+	def test_a_missing_file_name_fails_loudly(self):
+		with pytest.raises(ApiError):
+			UploadedFile.parse({"uuid": "file-1"})
+
+	def test_a_preview_is_not_what_downloads(self):
+		upload = UploadedFile.parse(
+			{
+				"uuid": "file-1",
+				"file_name": "photo.png",
+				"file_kind": "image",
+				"document_asset": None,
+				"preview_asset": {"url": "/api/organization-1/files/file-1/preview", "file_variant": "preview"},
+			}
+		)
+
+		assert upload.download_url is None, "a preview is a rendition, not the file"
+		assert upload.page_count is None
+
+	def test_without_any_asset_there_is_nothing_to_download(self):
+		upload = UploadedFile.parse({"uuid": "file-1", "file_name": "mystery.bin"})
+
+		assert upload.download_url is None
+
+	def test_parse_list_requires_a_bare_array(self):
+		with pytest.raises(ApiError):
+			UploadedFile.parse_list({"data": []})
+
+	def test_a_document_asset_that_is_not_the_original_is_not_downloadable(self):
+		upload = UploadedFile.parse(
+			{
+				"uuid": "file-1",
+				"file_name": "report.pdf",
+				"document_asset": {"url": "/api/organization-1/files/file-1/preview", "file_variant": "preview"},
+			}
+		)
+
+		assert upload.download_url is None
+
+	def test_a_document_asset_without_a_variant_is_trusted(self):
+		"""Tolerant of a field going missing, intolerant of one saying the wrong thing."""
+		upload = UploadedFile.parse({"uuid": "file-1", "file_name": "report.pdf", "document_asset": {"url": "/api/organization-1/files/file-1/document_pdf"}})
+
+		assert upload.download_url == "/api/organization-1/files/file-1/document_pdf"

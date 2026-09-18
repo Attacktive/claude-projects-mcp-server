@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_projects_mcp.models import Document, KnowledgeStats, Organization, Project, ScheduledTask
+from claude_projects_mcp.models import Document, KnowledgeStats, Organization, Project, ScheduledTask, UploadedFile
 
 from .fake_transport import FakeClaudeProjectsApi
 
@@ -73,6 +73,11 @@ class TestRealResponsesParse:
 	def test_doc_detail(self):
 		assert Document.parse(load("document_detail")).uuid
 
+	def test_files_list(self):
+		uploads = UploadedFile.parse_list(load("files_list"))
+
+		assert uploads and all(upload.uuid and upload.file_name and upload.download_url for upload in uploads)
+
 	def test_scheduled_tasks_list(self):
 		tasks = ScheduledTask.parse_list(load("scheduled_tasks_list"))
 
@@ -122,6 +127,13 @@ class TestFakeMatchesReality:
 
 		assert fake_keys <= keys_of(load("documents_list"))
 
+	def test_uploaded_file_fields_exist_upstream(self, api):
+		api.add_upload("project-1", "report.pdf", b"%PDF-1.4", page_count=1)
+		listing = api.request("GET", "/organizations/organization-1/projects/project-1/files")
+
+		assert keys_of(listing) <= keys_of(load("files_list")), "rows"
+		assert set(listing[0]["document_asset"]) <= set(load("files_list")[0]["document_asset"]), "document_asset"
+
 	def test_created_project_fields_exist_upstream(self, api):
 		created = api.request("POST", "/organizations/organization-1/projects", json_body={"name": "x", "description": ""})
 
@@ -156,7 +168,7 @@ class TestObservedContract:
 
 	def test_listings_are_bare_arrays_with_no_pagination_envelope(self):
 		"""Projects are the exception, and the only listing that can report truncation."""
-		for name in ("organizations", "documents_list"):
+		for name in ("organizations", "documents_list", "files_list"):
 			assert isinstance(load(name), list), f"{name} gained an envelope; models.py must handle it"
 
 	def test_the_projects_listing_is_paginated(self):
@@ -183,6 +195,19 @@ class TestObservedContract:
 		assert {"uuid"} <= keys_of(load("projects_v2")["data"])
 		assert {"uuid", "file_name"} <= keys_of(load("documents_list"))
 		assert {"uuid", "file_name", "content"} <= keys_of(load("document_detail"))
+		assert {"uuid", "file_uuid", "file_name", "size_bytes", "document_asset"} <= keys_of(load("files_list"))
+
+	def test_an_upload_carries_no_token_count(self):
+		"""Why the knowledge-size shortfall cannot be attributed upload by upload: the listing knows pages and bytes, never tokens."""
+		for upload in load("files_list"):
+			assert upload["document_asset"]["token_count"] is None
+			assert isinstance(upload["document_asset"]["page_count"], int)
+
+	def test_an_upload_downloads_through_a_host_relative_url_carrying_the_api_prefix(self):
+		"""The asset URL is not under the project path, and it already starts with the `/api` the base URL ends with, so the transport must resolve it against the origin rather than append it."""
+		for upload in load("files_list"):
+			assert upload["document_asset"]["url"].startswith("/api/")
+			assert "/projects/" not in upload["document_asset"]["url"]
 
 	def test_a_paused_task_omits_enabled_rather_than_sending_false(self):
 		"""The single most misleading thing about this API.

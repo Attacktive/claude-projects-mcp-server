@@ -246,3 +246,98 @@ def test_unparseable_success_body_is_an_api_error(transport, httpserver):
 
 	with pytest.raises(ApiError):
 		transport.request("GET", "/organizations")
+
+
+PDF = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n"
+
+# The download URL as the files listing hands it out (observed 2026-09-18): host-relative, and starting with the `/api` that the base URL already ends with.
+ASSET = "/api/organization-1/files/file-1/document_pdf"
+
+
+def test_request_bytes_returns_the_body_untouched(transport, httpserver):
+	"""Served at /api/..., which is what the origin sees; appending to the base URL would ask for /api/api/... instead."""
+	httpserver.expect_request(ASSET).respond_with_data(PDF, content_type="application/pdf")
+
+	assert transport.request_bytes(ASSET) == PDF
+
+
+def test_request_bytes_sends_the_session_key_and_accepts_any_content_type(transport, httpserver):
+	seen = []
+
+	def record(request):
+		seen.append(request)
+		return Response(PDF, status=200, content_type="application/pdf")
+
+	httpserver.expect_request(ASSET).respond_with_handler(record)
+	transport.request_bytes(ASSET)
+
+	assert f"sessionKey={SESSION_KEY}" in seen[0].headers["Cookie"]
+	assert seen[0].headers["Accept"] == "*/*"
+
+
+def test_request_bytes_retries_a_challenge_on_a_cold_connection(transport, httpserver):
+	seen = []
+
+	def handler(request):
+		seen.append(request.method)
+		if len(seen) == 1:
+			return Response(CHALLENGE_HTML, status=403, content_type="text/html")
+
+		return Response(PDF, status=200, content_type="application/pdf")
+
+	httpserver.expect_request(ASSET).respond_with_handler(handler)
+
+	assert transport.request_bytes(ASSET) == PDF
+	assert len(seen) == 2
+
+
+def test_request_bytes_404_is_not_found(transport, httpserver):
+	httpserver.expect_request(ASSET).respond_with_data("gone", status=404)
+
+	with pytest.raises(NotFoundError):
+		transport.request_bytes(ASSET)
+
+
+def test_request_bytes_401_is_auth_expired(transport, httpserver):
+	httpserver.expect_request(ASSET).respond_with_json({"error": "unauthorized"}, status=401)
+
+	with pytest.raises(AuthExpiredError):
+		transport.request_bytes(ASSET)
+
+
+def test_request_bytes_500_is_an_api_error_carrying_the_status(transport, httpserver):
+	httpserver.expect_request(ASSET).respond_with_data("boom", status=500)
+
+	with pytest.raises(ApiError) as exception_info:
+		transport.request_bytes(ASSET)
+
+	assert exception_info.value.status == 500
+
+
+def test_the_session_key_never_appears_in_a_download_error(transport, httpserver):
+	httpserver.expect_request(ASSET).respond_with_data(f"leaked {SESSION_KEY}", status=500)
+
+	with pytest.raises(ApiError) as exception_info:
+		transport.request_bytes(ASSET)
+
+	assert SESSION_KEY not in str(exception_info.value)
+	assert SESSION_KEY not in exception_info.value.body
+
+
+def test_request_bytes_rejects_an_html_page_served_as_a_file(transport, httpserver):
+	"""A stale session can be answered with a 200 login page; treating that as the PDF would back up the page and lose the file."""
+	httpserver.expect_request(ASSET).respond_with_data("<!DOCTYPE html><html><body>Log in</body></html>", status=200, content_type="text/html")
+
+	with pytest.raises(ApiError) as exception_info:
+		transport.request_bytes(ASSET)
+
+	assert "HTML" in str(exception_info.value)
+
+
+def test_request_bytes_refuses_a_url_on_another_origin(transport, httpserver):
+	"""The session cookie rides every request, so a listing that hands out a foreign URL must not be followed with it."""
+	with pytest.raises(ApiError) as exception_info:
+		transport.request_bytes("https://files.example.invalid/api/organization-1/files/file-1/document_pdf")
+
+	assert "origin" in str(exception_info.value)
+	assert not httpserver.log, "nothing may be sent"

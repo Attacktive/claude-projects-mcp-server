@@ -24,6 +24,9 @@ _PROJECT = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<pro
 _DOCUMENTS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/docs$")
 _DOCUMENT = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/docs/(?P<document>[^/]+)$")
 _KNOWLEDGE_STATS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/kb/stats$")
+_FILES = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/files$")
+# The download URL the files listing hands out (observed 2026-09-18): host-relative, outside the project path, and starting with the `/api` that the base URL already ends with.
+_FILE_ASSET = re.compile(r"^/api/(?P<organization>[^/]+)/files/(?P<file>[^/]+)/(?P<variant>[^/]+)$")
 _SCHEDULED_TASKS = re.compile(r"^/organizations/(?P<organization>[^/]+)/cowork/scheduled_tasks$")
 _SCHEDULED_TASK = re.compile(r"^/organizations/(?P<organization>[^/]+)/cowork/scheduled_tasks/(?P<task>[^/]+)$")
 
@@ -40,9 +43,15 @@ class FakeClaudeProjectsApi:
 		# The stub path is still exercised deliberately by `stub_api`, because the client must keep coping if an undocumented API changes its mind.
 		self.list_includes_content = list_includes_content
 
+		# Whether a documents listing carries estimated_token_count. The real API does; switching this off exercises the path where the sum is unknowable.
+		self.list_includes_token_counts = True
+
 		self.organizations: list[dict] = []
 		self.projects: dict[str, dict] = {}
 		self.documents: dict[str, list[dict]] = {}
+		self.uploads: dict[str, list[dict]] = {}
+		# Knowledge the API counts toward a project that no listing shows: the shape of the gap the real API presented on 2026-09-18, before the files endpoint was known.
+		self.unlisted_knowledge: dict[str, int] = {}
 		self.scheduled_tasks: dict[str, dict] = {}
 		self.log: list[tuple[str, str]] = []
 		self.closed = False
@@ -94,6 +103,32 @@ class FakeClaudeProjectsApi:
 		}
 		self.documents.setdefault(project_uuid, []).append(document)
 		return document["uuid"]
+
+	def add_upload(
+		self,
+		project_uuid: str,
+		file_name: str,
+		data: bytes,
+		file_kind: str = "document",
+		page_count: int | None = None,
+		token_count: int | None = None,
+	) -> str:
+		"""Put a file uploaded through the web UI in the fake and hand back its uuid.
+
+		`token_count` is what the file adds to the project's knowledge size.
+		It defaults to the byte count, which keeps the fake's arithmetic as plain as it is for documents; the real API never reports the number at all.
+		"""
+		upload = {
+			"uuid": self._next_uuid(),
+			"file_name": file_name,
+			"file_kind": file_kind,
+			"created_at": self._stamp(),
+			"_data": data,
+			"_page_count": page_count,
+			"_token_count": len(data) if token_count is None else token_count,
+		}
+		self.uploads.setdefault(project_uuid, []).append(upload)
+		return upload["uuid"]
 
 	def add_scheduled_task(
 		self,
@@ -165,6 +200,25 @@ class FakeClaudeProjectsApi:
 
 		raise ApiError(f"FakeClaudeProjectsApi has no route for {method} {path}", status=405)
 
+	def request_bytes(self, url: str) -> bytes:
+		self.log.append(("GET", url))
+		self._maybe_fail("GET", url)
+
+		match = _FILE_ASSET.match(url)
+		if not match:
+			raise ApiError(f"FakeClaudeProjectsApi has no route for GET {url}", status=404)
+
+		for project_uuid, uploads in self.uploads.items():
+			project = self.projects.get(project_uuid)
+			if project is None or project["_organization"] != match["organization"]:
+				continue
+
+			for upload in uploads:
+				if upload["uuid"] == match["file"]:
+					return upload["_data"]
+
+		raise NotFoundError(f"No uploaded file {match['file']}")
+
 	def close(self) -> None:
 		self.closed = True
 
@@ -191,6 +245,11 @@ class FakeClaudeProjectsApi:
 		if match:
 			return self._public_document(self._find_document(match["project"], match["document"]), with_content=True)
 
+		match = _FILES.match(path)
+		if match:
+			self._find_project(match["project"])
+			return [self._public_upload(upload, match["organization"]) for upload in self.uploads.get(match["project"], [])]
+
 		match = _KNOWLEDGE_STATS.match(path)
 		if match:
 			project = self._find_project(match["project"])
@@ -201,6 +260,9 @@ class FakeClaudeProjectsApi:
 
 			documents = self.documents.get(match["project"], [])
 			knowledge_size = sum(len(document["content"]) for document in documents if document.get("content") is not None)
+			# Uploads count toward the size without appearing in the documents listing, which is exactly the gap the real API showed on 2026-09-18.
+			knowledge_size += sum(upload["_token_count"] for upload in self.uploads.get(match["project"], []))
+			knowledge_size += self.unlisted_knowledge.get(match["project"], 0)
 			search_mode = knowledge_size > search_threshold
 			return {
 				"knowledge_size": knowledge_size,
@@ -294,6 +356,7 @@ class FakeClaudeProjectsApi:
 			project = self._find_project(match["project"])
 			del self.projects[project["uuid"]]
 			self.documents.pop(project["uuid"], None)
+			self.uploads.pop(project["uuid"], None)
 			return None
 
 		match = _DOCUMENT.match(path)
@@ -431,15 +494,47 @@ class FakeClaudeProjectsApi:
 
 		return public
 
-	@staticmethod
-	def _public_document(document: dict, with_content: bool) -> dict:
+	def _public_document(self, document: dict, with_content: bool) -> dict:
 		public = dict(document)
 		content = public.get("content")
-		if content is not None:
+		if content is not None and self.list_includes_token_counts:
 			public["estimated_token_count"] = len(content)
 
 		if not with_content:
 			del public["content"]
+
+		return public
+
+	@staticmethod
+	def _public_upload(upload: dict, organization_uuid: str) -> dict:
+		"""An uploaded file shaped the way the files listing shapes one (observed 2026-09-18).
+
+		A document's original sits under `document_asset`, and the listing never reports a token count, so nothing can add these up to the knowledge size.
+		Only PDFs were observed; the preview shape for any other kind is a guess kept as small as possible.
+		"""
+		public: dict[str, Any] = {
+			"uuid": upload["uuid"],
+			"file_uuid": upload["uuid"],
+			"file_name": upload["file_name"],
+			"file_kind": upload["file_kind"],
+			"created_at": upload["created_at"],
+			"size_bytes": len(upload["_data"]),
+			"preview_asset": None,
+			"document_asset": None,
+		}
+
+		if upload["file_kind"] == "document":
+			public["document_asset"] = {
+				"url": f"/api/{organization_uuid}/files/{upload['uuid']}/document_pdf",
+				"file_variant": "original",
+				"page_count": upload["_page_count"],
+				"token_count": None,
+			}
+		else:
+			public["preview_asset"] = {
+				"url": f"/api/{organization_uuid}/files/{upload['uuid']}/preview",
+				"file_variant": "preview",
+			}
 
 		return public
 

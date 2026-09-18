@@ -7,12 +7,12 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from .capacity import Verdict, candidates, judge, refusal
 from .errors import AmbiguousDocError, ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, KnowledgeFullError, NotFoundError, RateLimitedError
 from .identifiers import chat_project_id
-from .models import Document, KnowledgeStats, Organization, Project, ScheduledTask
+from .models import Document, KnowledgeStats, Organization, Project, ScheduledTask, UploadedFile
 from .transport import HttpMethod, Transport
 
 _UUID_LIKE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{4,}$")
@@ -112,11 +112,17 @@ class ClaudeProjectsClient:
 	# --------------------------------------------------------------- plumbing
 
 	def _request(self, method: HttpMethod, path: str, json_body: dict | None = None):
+		return self._retrying(lambda: self._transport.request(method, path, json_body=json_body))
+
+	def _request_bytes(self, url: str) -> bytes:
+		return self._retrying(lambda: self._transport.request_bytes(url))
+
+	def _retrying(self, send: Callable[[], Any]) -> Any:
 		"""Retry only rate limits. Everything else is a real answer, not a hiccup."""
 		attempt = 0
 		while True:
 			try:
-				return self._transport.request(method, path, json_body=json_body)
+				return send()
 			except RateLimitedError as exception:
 				attempt += 1
 				if attempt > _MAX_RATE_LIMIT_RETRIES:
@@ -317,6 +323,44 @@ class ClaudeProjectsClient:
 		"""Newest first. Entries may be stubs, depending on what the API includes."""
 		raw = self._request("GET", self._documents_path(project_id))
 		return _newest_first(Document.parse_list(raw))
+
+	# ---------------------------------------------------------------- uploads
+
+	def _files_path(self, project_id: str) -> str:
+		organization_id = self.resolve_organization_for_project(project_id)
+		return f"/organizations/{organization_id}/projects/{project_id}/files"
+
+	def list_uploaded_files(self, project_id: str) -> list[UploadedFile]:
+		"""Files uploaded through the web UI, newest first.
+
+		They count toward the project's knowledge size but never appear in the documents listing (observed 2026-09-18), so every operation that claims to cover a whole project has to ask here as well.
+		"""
+		raw = self._request("GET", self._files_path(project_id))
+		return _newest_first(UploadedFile.parse_list(raw))
+
+	def try_list_uploaded_files(self, project_id: str) -> tuple[list[UploadedFile] | None, ClaudeProjectsError | None]:
+		"""The uploads, or None with the failure, for callers whose main job is elsewhere and who report rather than raise.
+
+		Kept here so every such caller applies the same rule about what counts as a failure, and shapes only the message.
+		"""
+		try:
+			return self.list_uploaded_files(project_id), None
+		except ClaudeProjectsError as exception:
+			return None, exception
+
+	def download_uploaded_file(self, upload: UploadedFile) -> bytes:
+		"""The original bytes of an upload.
+
+		NotFoundError when the listing offered no original to fetch, and ApiError when what came back is not the size the listing promised, which is the one check the listing makes possible.
+		"""
+		if upload.download_url is None:
+			raise NotFoundError(f"{upload.file_name!r} ({upload.uuid}) has no downloadable original: the files listing offers one for a document such as a PDF, but only a preview for anything else, and a preview is not the file.")
+
+		data = self._request_bytes(upload.download_url)
+		if upload.size_bytes is not None and len(data) != upload.size_bytes:
+			raise ApiError(f"Downloading {upload.file_name!r} ({upload.uuid}) returned {len(data):,} bytes, but the listing said {upload.size_bytes:,}; refusing to treat that as the file.", status=0)
+
+		return data
 
 	def get_document(self, project_id: str, document_uuid: str) -> Document:
 		raw = self._request("GET", f"{self._documents_path(project_id)}/{document_uuid}")
@@ -769,5 +813,11 @@ class ClaudeProjectsClient:
 		)
 
 
-def _newest_first(documents: list[Document]) -> list[Document]:
-	return sorted(documents, key=lambda document: document.created_at or "", reverse=True)
+class _Dated(Protocol):
+	# A property rather than an attribute, because every implementer is a frozen dataclass and a settable member would not match its read-only field.
+	@property
+	def created_at(self) -> str | None: ...
+
+
+def _newest_first[Item: _Dated](items: list[Item]) -> list[Item]:
+	return sorted(items, key=lambda item: item.created_at or "", reverse=True)

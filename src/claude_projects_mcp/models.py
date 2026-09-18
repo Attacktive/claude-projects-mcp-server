@@ -153,6 +153,67 @@ class Document:
 		return len(self.content)
 
 
+def _original_url(raw: Any) -> str | None:
+	"""The URL of an asset that is the file itself, not a rendition of it.
+
+	Tolerant of the variant field going missing, intolerant of it saying anything but `original`: a preview backed up in place of the file would be worse than refusing.
+	"""
+	if not isinstance(raw, dict):
+		return None
+
+	variant = raw.get("file_variant")
+	if variant is not None and variant != "original":
+		return None
+
+	url = raw.get("url")
+	if isinstance(url, str) and url:
+		return url
+
+	return None
+
+
+@dataclass(frozen=True, slots=True)
+class UploadedFile:
+	"""A file uploaded through the web UI, which the documents endpoint never lists.
+
+	Observed 2026-09-18 at `/organizations/{organization}/projects/{uuid}/files`: a PDF counts toward the project's knowledge size but is a different kind of thing from a document — it has bytes and pages rather than content, and the listing reports no token count for it.
+	"""
+
+	uuid: str
+	file_name: str
+	file_kind: str | None = None
+	created_at: str | None = None
+	size_bytes: int | None = None
+	page_count: int | None = None
+	# Host-relative, as the API hands it out: it starts with the `/api` that the base URL already ends with, so the transport resolves it against the origin rather than appending it.
+	# None when the listing offers no original, as it does for an image, which has only a preview and a thumbnail; neither is the file.
+	download_url: str | None = None
+
+	@classmethod
+	def parse(cls, raw: Any) -> Self:
+		if not isinstance(raw, dict):
+			raise ApiError(f"Expected a JSON object for Uploaded file, got {type(raw).__name__}.", status=0)
+
+		# The capture carried the same value under both keys; either one identifies the file.
+		uuid = raw.get("uuid") or _require(raw, "file_uuid", "Uploaded file")
+		document_asset = raw.get("document_asset")
+		page_count = document_asset.get("page_count") if isinstance(document_asset, dict) else None
+
+		return cls(
+			uuid=uuid,
+			file_name=_require(raw, "file_name", "Uploaded file"),
+			file_kind=raw.get("file_kind"),
+			created_at=raw.get("created_at"),
+			size_bytes=raw.get("size_bytes"),
+			page_count=page_count,
+			download_url=_original_url(document_asset),
+		)
+
+	@classmethod
+	def parse_list(cls, raw: Any) -> list[Self]:
+		return _parse_list(raw, "uploaded files", cls.parse)
+
+
 def _prompt_of(ccr: Any) -> str | None:
 	"""The instruction a scheduled task will send, from inside the job config.
 

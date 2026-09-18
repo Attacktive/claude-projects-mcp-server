@@ -1,0 +1,54 @@
+[
+	{
+		"success": true,
+		"path": null,
+		"sanitized_name": null,
+		"file_kind": "document",
+		"file_uuid": "<str>",
+		"file_name": "<redacted>",
+		"created_at": "<str>",
+		"user_uuid": null,
+		"size_bytes": 1054702,
+		"thumbnail_asset": {
+			"url": "/api/<str>/files/<str>/thumbnail",
+			"file_variant": "thumbnail",
+			"primary_color": "<str>",
+			"image_width": 309,
+			"image_height": 400
+		},
+		"preview_asset": null,
+		"document_asset": {
+			"url": "/api/<str>/files/<str>/document_pdf",
+			"file_variant": "original",
+			"page_count": 7,
+			"token_count": null
+		},
+		"uuid": "<str>"
+	},
+	{
+		"success": true,
+		"path": null,
+		"sanitized_name": null,
+		"file_kind": "document",
+		"file_uuid": "<str>",
+		"file_name": "<redacted>",
+		"created_at": "<str>",
+		"user_uuid": null,
+		"size_bytes": 413287,
+		"thumbnail_asset": {
+			"url": "/api/<str>/files/<str>/thumbnail",
+			"file_variant": "thumbnail",
+			"primary_color": "<str>",
+			"image_width": 309,
+			"image_height": 400
+		},
+		"preview_asset": null,
+		"document_asset": {
+			"url": "/api/<str>/files/<str>/document_pdf",
+			"file_variant": "original",
+			"page_count": 4,
+			"token_count": null
+		},
+		"uuid": "<str>"
+	}
+]

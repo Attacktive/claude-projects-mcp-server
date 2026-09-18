@@ -1,7 +1,10 @@
+from dataclasses import replace
+
 import pytest
 
 from claude_projects_mcp.client import ClaudeProjectsClient
 from claude_projects_mcp.errors import ApiError, NotFoundError, RateLimitedError
+from claude_projects_mcp.models import UploadedFile
 
 from .conftest import ORGANIZATION, PROJECT
 
@@ -202,3 +205,81 @@ class TestRateLimiting:
 
 		docs_requests = [path for _, path in api.log if path.endswith("/docs")]
 		assert len(docs_requests) == 1, "a 500 is an answer, not a hiccup; it must not be retried"
+
+
+class TestUploadedFiles:
+	"""Files uploaded through the web UI, which the documents endpoint never lists (observed 2026-09-18)."""
+
+	def test_lists_uploads_newest_first(self, api, client):
+		older = api.add_upload(PROJECT, "older.pdf", b"%PDF-1.4 older")
+		newer = api.add_upload(PROJECT, "newer.pdf", b"%PDF-1.4 newer")
+
+		uploads = client.list_uploaded_files(PROJECT)
+
+		assert [upload.uuid for upload in uploads] == [newer, older]
+
+	def test_an_upload_reports_bytes_and_pages_rather_than_content(self, api, client):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report", page_count=7)
+
+		upload = client.list_uploaded_files(PROJECT)[0]
+
+		assert upload.file_kind == "document"
+		assert upload.size_bytes == len(b"%PDF-1.4 report")
+		assert upload.page_count == 7
+
+	def test_a_project_without_uploads_lists_none(self, client):
+		assert client.list_uploaded_files(PROJECT) == []
+
+	def test_an_unknown_project_is_a_not_found_error(self, client):
+		with pytest.raises(NotFoundError):
+			client.list_uploaded_files("no-such-project")
+
+	def test_downloads_the_original_bytes(self, api, client):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+		upload = client.list_uploaded_files(PROJECT)[0]
+
+		assert client.download_uploaded_file(upload) == b"%PDF-1.4 report"
+
+	def test_an_upload_with_nothing_to_download_is_a_not_found_error(self, client):
+		upload = UploadedFile(uuid="file-1", file_name="mystery.bin")
+
+		with pytest.raises(NotFoundError) as exception_info:
+			client.download_uploaded_file(upload)
+
+		assert "mystery.bin" in str(exception_info.value)
+
+	def test_a_rate_limited_download_is_retried(self, api):
+		slept = []
+		client = ClaudeProjectsClient(api, sleep=slept.append)
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+		upload = client.list_uploaded_files(PROJECT)[0]
+		api.fail_once("GET", "/document_pdf$", RateLimitedError("slow down", retry_after=2))
+
+		assert client.download_uploaded_file(upload) == b"%PDF-1.4 report"
+		assert slept == [2]
+
+	def test_a_download_whose_size_disagrees_with_the_listing_is_an_api_error(self, api, client):
+		"""size_bytes is the one check the listing offers on what came back; a short or padded body is not the file."""
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+		upload = replace(client.list_uploaded_files(PROJECT)[0], size_bytes=3)
+
+		with pytest.raises(ApiError) as exception_info:
+			client.download_uploaded_file(upload)
+
+		assert "3" in str(exception_info.value)
+
+	def test_try_listing_hands_back_the_failure_instead_of_raising(self, api, client):
+		api.fail_once("GET", "/files$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		uploads, failure = client.try_list_uploaded_files(PROJECT)
+
+		assert uploads is None
+		assert isinstance(failure, ApiError)
+
+	def test_try_listing_hands_back_the_uploads_when_it_can(self, api, client):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		uploads, failure = client.try_list_uploaded_files(PROJECT)
+
+		assert [upload.file_name for upload in uploads] == ["report.pdf"]
+		assert failure is None

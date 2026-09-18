@@ -11,7 +11,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 381 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All seventeen tools are implemented and covered by 382 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
 Files uploaded through the web UI, such as PDFs, are outside that path entirely (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
@@ -42,16 +42,16 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
 ## To do
 
 - Uploaded files are invisible to this server.
-  Every document tool goes through `/organizations/{organization}/projects/{uuid}/docs`, which carries text documents only, so a PDF uploaded through the web UI counts toward the project's knowledge size but is never listed, copied, written, backed up, or offered for compaction.
+  Every document tool goes through `/organizations/{organization}/projects/{uuid}/docs`, which carries text documents only, so a PDF uploaded through the web UI is never listed, copied, written, backed up, or offered for compaction, while the observation below says it still counts toward the project's knowledge size.
   Observed 2026-09-18 while copying nine projects between two organizations: in one of them, `list_documents` returned two Markdown documents whose `estimated_token_count` summed to 13,757 against a reported knowledge size of 19,641, and the web UI showed two PDF files that would account for the gap.
   In the other eight projects the summed `estimated_token_count` matched the reported knowledge size exactly, which is what makes a shortfall a usable signal.
   Three things follow.
   `delete_project` backs up only what the documents endpoint lists, so a project's uploads are destroyed with no backup.
   A `pull_documents` and `push_documents` migration drops every upload without a word.
-  A capacity refusal names documents worth compacting, but the ranking in `capacity.py` sees documents only, so a project that is full because of uploads is told to compact the wrong things.
+  A capacity refusal names documents worth compacting, but the ranking in `capacity.py` sees documents only, so a project that is full because of uploads is told to compact the wrong things, or, when it holds no other text document, that there is nothing else in the project to compact.
   The browser lists uploads through `/organizations/{organization}/projects/{uuid}/files`, a sibling of `/docs`, which is where support would start.
-  That listing is a bare JSON array like the others; each entry carries `file_name`, `file_kind` (`document` for a PDF), `created_at`, `size_bytes`, the same value under `uuid` and `file_uuid`, and a `document_asset` whose `token_count` is null, so the listing cannot attribute the gap file by file.
-  `document_asset.url` points at `/api/{organization}/files/{file_uuid}/document_pdf`, which sits outside the project path and already carries the `/api` prefix that the base URL ends with, and the transport accepts JSON bodies only, so fetching one needs a bytes path as well.
+  That listing is a bare JSON array like the others; each entry carries `file_name`, `file_kind` (`document` for a PDF), `created_at`, `size_bytes`, the same value under `uuid` and `file_uuid`, and a `document_asset` carrying `page_count` but a null `token_count`, so the listing cannot attribute the gap exactly file by file.
+  `document_asset.url` points at `/api/{organization}/files/{file_uuid}/document_pdf`, which sits outside the project path and already carries the `/api` prefix that the base URL ends with, and the transport parses every response as JSON, so fetching one needs a bytes path as well.
   Until uploads are read and written, `list_documents` should at least warn when the summed `estimated_token_count` of the listed documents falls short of the reported knowledge size, and say that the sum is unknowable when a document carries no count rather than guess.
 
 ## Setup

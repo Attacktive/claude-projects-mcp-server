@@ -13,6 +13,7 @@ import pytest
 from claude_projects_mcp.client import ClaudeProjectsClient
 from claude_projects_mcp.config import Settings, load_env_file
 from claude_projects_mcp.errors import NotFoundError
+from claude_projects_mcp.models import UploadedFile
 from claude_projects_mcp.transport import CurlCffiTransport
 
 pytestmark = pytest.mark.live
@@ -247,21 +248,25 @@ def test_an_upload_downloads_as_its_original_bytes(client):
 
 	Skipped when no project has any, which proves nothing either way; upload a PDF to a private project to make it run.
 	"""
-	uploads = []
-	for candidate in client.list_projects():
-		uploads = [upload for upload in client.list_uploaded_files(candidate.uuid) if upload.download_url]
-		if uploads:
-			break
-
-	if not uploads:
+	upload = _first_downloadable_upload(client)
+	if upload is None:
 		pytest.skip("no project on this account holds an uploaded file")
 
-	upload = uploads[0]
 	data = client.download_uploaded_file(upload)
 
 	assert data, "an empty body is not a file"
-	if upload.file_kind == "document" and upload.file_name.lower().endswith(".pdf"):
+	if upload.file_name.lower().endswith(".pdf"):
 		assert data.startswith(b"%PDF"), "a PDF original should start with the PDF magic bytes; anything else is a login page or a preview"
 
 	if upload.size_bytes is not None:
 		assert len(data) == upload.size_bytes, "size_bytes in the listing should be the byte count of the original"
+
+
+def _first_downloadable_upload(client: ClaudeProjectsClient) -> UploadedFile | None:
+	"""The first upload on the account that offers an original, whichever project holds it."""
+	for candidate in client.list_projects():
+		for upload in client.list_uploaded_files(candidate.uuid):
+			if upload.download_url:
+				return upload
+
+	return None

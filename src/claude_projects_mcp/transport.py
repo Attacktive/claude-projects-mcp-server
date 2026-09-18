@@ -171,21 +171,31 @@ class CurlCffiTransport:
 
 		The body is only decoded as text on an error, so a successful download never pays for decoding a binary as UTF-8.
 		"""
-		status = response.status_code
-		content_type = response.headers.get("content-type", "")
-
-		# An HTML body on a 401/403 is a challenge page: Cloudflare answered instead of the API.
-		# A JSON body means the API answered, so it is about the credential.
-		if status in (401, 403) and _looks_like_html(self._safe(response.text or ""), content_type):
-			# On a cold connection the first challenge never escapes — `request` retries it — so the cold message can honestly say "twice in a row".
-			if self._established:
-				raise CloudflareBlockedError(_CLOUDFLARE_HELP_ESTABLISHED.format(status=status))
-
-			raise CloudflareBlockedError(_CLOUDFLARE_HELP_COLD.format(status=status))
+		self._raise_for_challenge(response)
 
 		# Past that check the API itself replied, even if it replied with an error, so the connection is proven and any later challenge is a real one rather than a cold start.
 		self._established = True
 
+		self._raise_for_error(response)
+
+	def _raise_for_challenge(self, response: Any) -> None:
+		# An HTML body on a 401/403 is a challenge page: Cloudflare answered instead of the API.
+		# A JSON body means the API answered, so it is about the credential.
+		status = response.status_code
+		if status not in (401, 403):
+			return
+
+		if not _looks_like_html(self._safe(response.text or ""), response.headers.get("content-type", "")):
+			return
+
+		# On a cold connection the first challenge never escapes — `request` retries it — so the cold message can honestly say "twice in a row".
+		if self._established:
+			raise CloudflareBlockedError(_CLOUDFLARE_HELP_ESTABLISHED.format(status=status))
+
+		raise CloudflareBlockedError(_CLOUDFLARE_HELP_COLD.format(status=status))
+
+	def _raise_for_error(self, response: Any) -> None:
+		status = response.status_code
 		if status in (401, 403):
 			raise AuthExpiredError(_AUTH_HELP.format(status=status))
 

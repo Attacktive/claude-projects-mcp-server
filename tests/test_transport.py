@@ -341,3 +341,12 @@ def test_request_bytes_refuses_a_url_on_another_origin(transport, httpserver):
 
 	assert "origin" in str(exception_info.value)
 	assert not httpserver.log, "nothing may be sent"
+
+
+def test_request_bytes_refuses_a_scheme_relative_url_on_another_origin(transport, httpserver):
+	"""`//host/path` looks relative and is not: urljoin resolves it onto the other host, so the check has to run on what was resolved rather than on what was handed out."""
+	with pytest.raises(ApiError) as exception_info:
+		transport.request_bytes("//files.example.invalid/api/organization-1/files/file-1/document_pdf")
+
+	assert "origin" in str(exception_info.value)
+	assert not httpserver.log, "nothing may be sent"

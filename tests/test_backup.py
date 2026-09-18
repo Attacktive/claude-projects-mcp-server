@@ -91,3 +91,31 @@ def test_an_unwritable_location_raises_backup_error(tmp_path):
 
 	with pytest.raises(BackupError):
 		store.save(PROJECT, "notes.md", "x")
+
+
+def test_saves_bytes_untouched_and_returns_the_path(store, tmp_path):
+	"""An uploaded PDF is bytes, not text, and a backup that decoded it would corrupt it."""
+	path = store.save_bytes(PROJECT, "report.pdf", b"%PDF-1.4\x00\xff")
+
+	assert path.read_bytes() == b"%PDF-1.4\x00\xff"
+	assert path.is_relative_to(tmp_path)
+	assert path.name == "20260806T162453Z--report.pdf"
+
+
+def test_a_bytes_backup_never_overwrites_an_earlier_one(tmp_path):
+	store = BackupStore(tmp_path, now=clock_at("2026-08-06T16:24:53"))
+	first = store.save_bytes(PROJECT, "report.pdf", b"one")
+	second = store.save_bytes(PROJECT, "report.pdf", b"two")
+
+	assert first != second
+	assert first.read_bytes() == b"one"
+	assert second.read_bytes() == b"two"
+
+
+def test_an_unwritable_location_raises_backup_error_for_bytes_too(tmp_path):
+	blocker = tmp_path / "blocked"
+	blocker.write_text("I am a file, not a directory")
+	store = BackupStore(blocker, now=clock_at("2026-08-06T16:24:53"))
+
+	with pytest.raises(BackupError):
+		store.save_bytes(PROJECT, "report.pdf", b"x")

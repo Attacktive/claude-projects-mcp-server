@@ -16,8 +16,8 @@ from mcp_types import ToolAnnotations
 from .backup import BackupStore
 from .client import ClaudeProjectsClient, ReplaceResult, looks_like_uuid
 from .config import Settings
-from .errors import ClaudeProjectsError, NotFoundError
-from .models import Document, KnowledgeStats, Project
+from .errors import BackupError, ClaudeProjectsError, NotFoundError
+from .models import Document, KnowledgeStats, Project, UploadedFile
 from .results import with_warning
 from .scheduled import register as register_scheduled_tools
 from .sync import FileResult, PushOptions, pull, push, summarise
@@ -28,16 +28,17 @@ _INSTRUCTIONS = """Read and write Claude Cowork / claude.ai projects and their k
 These are shared team documents with no server-side undo, so writes are deliberately
 cautious: replacing an existing document requires overwrite=true, and the previous
 content is backed up locally first. Deleting a whole project takes every document in it,
-so delete_project needs the project's name typed back and backs every text document up first.
+so delete_project needs the project's name typed back and backs every document and upload up first.
 
 For more than a couple of edits, prefer pull_documents to a folder, edit the files with normal
 tools, then push_documents back — it is far cheaper than moving whole documents through tool
 calls one at a time.
 
-Every document tool here sees text documents only. A file uploaded through the web UI, such as
-a PDF, counts toward the project's knowledge size but is never listed, pulled, pushed, or backed
-up, so a pull-and-push copy is not a full migration and delete_project destroys uploads with no
-backup. Before either, tell the user to check the project for uploads in the web UI.
+Files uploaded through the web UI, such as PDFs, count toward the project's knowledge size
+and are a different kind of thing from a document: list_documents shows them under
+uploaded_files, pull_documents copies them down as bytes, and delete_project backs them up,
+but push_documents cannot write them and nothing here can compact them. Changing or adding
+an upload means the web UI, so a pull-and-push copy carries the documents only.
 
 A project's knowledge has two lines, both reported by list_documents: a search threshold, past
 which Claude in the web UI retrieves from the knowledge instead of reading all of it, and a
@@ -197,7 +198,7 @@ def _register_update_project(server: MCPServer, client: ClaudeProjectsClient) ->
 def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
-		description="Delete a project and everything in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every text document is copied to the local backup directory first; if that fails, nothing is deleted. Files uploaded through the web UI, such as PDFs, are invisible to this server and are destroyed with no backup, so have the user check the project for uploads in the web UI before calling this.",
+		description="Delete a project and everything in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every text document and every file uploaded through the web UI is copied to the local backup directory first; if any of that fails, nothing is deleted. An upload with no downloadable original, such as an image, blocks the deletion until it is removed in the web UI.",
 	)
 	def delete_project(project_id: str, confirm_name: str) -> dict:
 		with translated():
@@ -205,8 +206,9 @@ def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, ba
 			if confirm_name != project.name:
 				raise ToolError(f"confirm_name does not match. To delete this project pass confirm_name={project.name!r} exactly. Nothing has been changed.")
 
-			# Backing up first is the precondition, not a courtesy: once the project is gone its documents are unreachable, so a failure here must stop everything.
+			# Backing up first is the precondition, not a courtesy: once the project is gone its documents and uploads are unreachable, so a failure here must stop everything.
 			backup_paths = [str(path) for path in _backup_every_document(client, backups, project_id)]
+			backup_paths.extend(str(path) for path in _backup_every_upload(client, backups, project_id))
 			client.delete_project(project_id)
 
 		return {
@@ -240,10 +242,59 @@ def _list_documents_warning(stats: KnowledgeStats | None) -> str | None:
 	return None
 
 
+def _shortfall_warning(stats: KnowledgeStats | None, documents: list[Document], uploads: list[UploadedFile] | None) -> str | None:
+	"""The reported knowledge size against what the listed documents account for.
+
+	Observed 2026-09-18: in eight projects the two matched exactly, and in the ninth the difference was the uploads this server could not yet see, so an unexplained shortfall is a real signal rather than rounding.
+	Listed uploads explain a shortfall without attributing it, since the files listing reports no token counts.
+	"""
+	if stats is None:
+		return None
+
+	uncounted = [document for document in documents if document.estimated_token_count is None]
+	if uncounted:
+		return f"Whether the listed documents account for the knowledge size could not be checked: {len(uncounted)} of them carry no estimated_token_count."
+
+	accounted = sum(document.estimated_token_count or 0 for document in documents)
+	shortfall = stats.size - accounted
+	if shortfall <= 0 or uploads:
+		return None
+
+	if uploads is None:
+		explanation = "the files listing that would explain the difference could not be checked"
+	else:
+		explanation = "the project's files listing shows no uploads to explain the difference"
+
+	return f"The listed documents account for {accounted:,} of {stats.size:,} tokens; {shortfall:,} tokens are unaccounted for, and {explanation}. Something in the project knowledge is invisible to this server."
+
+
+def _try_list_uploads(client: ClaudeProjectsClient, project_id: str) -> tuple[list[UploadedFile] | None, str | None]:
+	"""The project's uploads, or None with a warning when the files listing could not be fetched.
+
+	The documents are the point of a listing, so a failure here is reported beside them rather than allowed to fail the whole call.
+	"""
+	uploads, failure = client.try_list_uploaded_files(project_id)
+	if uploads is not None:
+		return uploads, None
+
+	return None, f"Uploaded files could not be checked, so if the web UI shows PDFs or other uploads this server cannot see them: {failure}"
+
+
+def _upload_dict(upload: UploadedFile) -> dict:
+	return {
+		"uuid": upload.uuid,
+		"file_name": upload.file_name,
+		"file_kind": upload.file_kind,
+		"created_at": upload.created_at,
+		"size_bytes": upload.size_bytes,
+		"page_count": upload.page_count,
+	}
+
+
 def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
-		description="List the text documents in a project. `knowledge` reports the project's size against its search threshold and its maximum; a file uploaded through the web UI, such as a PDF, counts toward it but is not listed. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
+		description="List the text documents in a project, and under `uploaded_files` the files uploaded through the web UI, such as PDFs, which count toward `knowledge` but are not documents: pull_documents copies them and delete_project backs them up, but nothing here can write or compact them. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
 	)
 	def list_documents(project_id: str) -> dict:
 		with translated():
@@ -252,6 +303,8 @@ def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 				stats = client.knowledge_stats(project_id)
 			except NotFoundError:
 				stats = None
+
+			uploads, uploads_warning = _try_list_uploads(client, project_id)
 
 		body: dict = {
 			"project_id": project_id,
@@ -268,6 +321,10 @@ def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 			"duplicate_file_names": _find_duplicates(documents),
 		}
 
+		# Absent means unknown; an empty list would claim there are none.
+		if uploads is not None:
+			body["uploaded_files"] = [_upload_dict(upload) for upload in uploads]
+
 		if stats is not None:
 			body["knowledge"] = {
 				"size": stats.size,
@@ -276,7 +333,7 @@ def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 				"search_mode": stats.search_mode,
 			}
 
-		return with_warning(body, _list_documents_warning(stats))
+		return with_warning(body, _joined(_list_documents_warning(stats), _shortfall_warning(stats, documents, uploads), uploads_warning))
 
 
 def _register_read_document(server: MCPServer, client: ClaudeProjectsClient) -> None:
@@ -439,7 +496,7 @@ def _register_delete_document(server: MCPServer, client: ClaudeProjectsClient, b
 def _register_pull_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=False),
-		description="Copy the project's text documents into a local folder. Files uploaded through the web UI, such as PDFs, are not copied, so this is not a full export. Local files that differ are kept, not overwritten, unless overwrite_local=true.",
+		description="Copy the project's documents and uploaded files into a local folder. Uploads such as PDFs come down as bytes, and each result row says which `kind` it was. Local files that differ are kept, not overwritten, unless overwrite_local=true.",
 	)
 	def pull_documents(project_id: str, destination_directory: str, overwrite_local: bool = False) -> dict:
 		try:
@@ -552,6 +609,23 @@ def _backup_every_document(client: ClaudeProjectsClient, backups: BackupStore, p
 	return saved
 
 
+def _backup_every_upload(client: ClaudeProjectsClient, backups: BackupStore, project_id: str) -> list[Path]:
+	"""Fetch every upload's bytes into the backup directory, raising on the first failure so the deletion stops.
+
+	The listing itself failing propagates too: a 404 there is unexplained rather than "no uploads", since the endpoint answers an empty array for a project without any.
+	"""
+	saved = []
+	for upload in client.list_uploaded_files(project_id):
+		try:
+			data = client.download_uploaded_file(upload)
+		except ClaudeProjectsError as exception:
+			raise BackupError(f"Could not fetch the uploaded file {upload.file_name!r} ({upload.uuid}) to back it up, so nothing was deleted: {exception} Remove that file in the web UI first, or delete the project there.") from exception
+
+		saved.append(backups.save_bytes(project_id, upload.file_name, data))
+
+	return saved
+
+
 def _duplicate_warning(matches: list[Document], returned: Document) -> str | None:
 	others = [match.uuid for match in matches if match.uuid != returned.uuid]
 	if not others:
@@ -589,4 +663,5 @@ def _result_dict(result: FileResult) -> dict:
 		"local_path": result.local_path,
 		"detail": result.detail,
 		"backup_path": result.backup_path,
+		"kind": result.kind,
 	}

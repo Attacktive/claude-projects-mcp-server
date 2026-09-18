@@ -15,7 +15,12 @@ from pathlib import Path
 from .client import ClaudeProjectsClient
 from .errors import ClaudeProjectsError, KnowledgeFullError
 from .filenames import deduplicate, safe_child, sanitize
-from .models import Document
+from .models import Document, UploadedFile
+
+# Stands in for every upload in a pull's results when the files listing itself could not be fetched.
+UPLOADS_PLACEHOLDER = "(uploaded files)"
+
+_LOCAL_DIFFERS = "local file differs; pass overwrite_local to take the remote version"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +30,8 @@ class FileResult:
 	local_path: str | None = None
 	detail: str | None = None
 	backup_path: str | None = None
+	# "document" for a text document, "upload" for a file uploaded through the web UI, which comes down as bytes.
+	kind: str = "document"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +56,7 @@ def pull(
 	destination_directory: Path | str,
 	overwrite_local: bool = False,
 ) -> list[FileResult]:
-	"""Copy the project's text documents into `destination_directory`.
+	"""Copy the project's documents and uploaded files into `destination_directory`.
 
 	Local files that differ are kept, not clobbered — someone editing locally should not lose that work to a routine pull.
 	Pass `overwrite_local` to take the remote version.
@@ -58,13 +65,82 @@ def pull(
 	destination.mkdir(parents=True, exist_ok=True)
 
 	documents = client.list_documents(project_id)
-	local_names = deduplicate({document.uuid: sanitize(document.file_name, fallback=document.uuid) for document in documents})
+	uploads, uploads_failure = _uploads_of(client, project_id)
+
+	# One namespace for both kinds, so a document and an upload sharing a name cannot overwrite each other.
+	names = {document.uuid: sanitize(document.file_name, fallback=document.uuid) for document in documents}
+	names.update({upload.uuid: sanitize(upload.file_name, fallback=upload.uuid) for upload in uploads})
+	local_names = deduplicate(names)
 
 	results = []
 	for document in documents:
 		results.append(_pull_one(client, project_id, document, destination, local_names[document.uuid], overwrite_local))
 
+	for upload in uploads:
+		results.append(_pull_upload(client, upload, destination, local_names[upload.uuid], overwrite_local))
+
+	if uploads_failure is not None:
+		results.append(uploads_failure)
+
 	return results
+
+
+def _uploads_of(client: ClaudeProjectsClient, project_id: str) -> tuple[list[UploadedFile], FileResult | None]:
+	"""The project's uploads, or an error result standing in for them when the listing itself failed.
+
+	The documents are already worth writing by then, so the failure rides along in the results rather than throwing them away.
+	"""
+	uploads, failure = client.try_list_uploaded_files(project_id)
+	if uploads is not None:
+		return uploads, None
+
+	return [], FileResult(UPLOADS_PLACEHOLDER, "error", detail=f"uploaded files could not be listed, so none were copied: {failure}", kind="upload")
+
+
+def _pull_upload(
+	client: ClaudeProjectsClient,
+	upload: UploadedFile,
+	destination: Path,
+	local_name: str,
+	overwrite_local: bool,
+) -> FileResult:
+	try:
+		data = client.download_uploaded_file(upload)
+
+		return _place(
+			upload.file_name,
+			safe_child(destination, local_name),
+			overwrite_local,
+			"upload",
+			unchanged=lambda path: path.read_bytes() == data,
+			write=lambda path: path.write_bytes(data),
+		)
+	except (ClaudeProjectsError, OSError) as exception:
+		return FileResult(upload.file_name, "error", detail=str(exception), kind="upload")
+
+
+def _place(
+	file_name: str,
+	target: Path,
+	overwrite_local: bool,
+	kind: str,
+	*,
+	unchanged: Callable[[Path], bool],
+	write: Callable[[Path], object],
+) -> FileResult:
+	"""Put a remote file in place, unless a local copy already matches, or differs without permission to replace it.
+
+	Documents compare as text and uploads as bytes, which is all that differs between the two kinds; the rules about when to write are the same.
+	"""
+	if target.exists():
+		if unchanged(target):
+			return FileResult(file_name, "unchanged", local_path=str(target), kind=kind)
+
+		if not overwrite_local:
+			return FileResult(file_name, "skipped_exists", local_path=str(target), detail=_LOCAL_DIFFERS, kind=kind)
+
+	write(target)
+	return FileResult(file_name, "written", local_path=str(target), kind=kind)
 
 
 def _pull_one(
@@ -80,22 +156,14 @@ def _pull_one(
 		if content is None:
 			content = client.get_document(project_id, document.uuid).content or ""
 
-		target = safe_child(destination, local_name)
-
-		if target.exists():
-			if target.read_text(encoding="utf-8") == content:
-				return FileResult(document.file_name, "unchanged", local_path=str(target))
-
-			if not overwrite_local:
-				return FileResult(
-					document.file_name,
-					"skipped_exists",
-					local_path=str(target),
-					detail="local file differs; pass overwrite_local to take the remote version",
-				)
-
-		target.write_text(content, encoding="utf-8")
-		return FileResult(document.file_name, "written", local_path=str(target))
+		return _place(
+			document.file_name,
+			safe_child(destination, local_name),
+			overwrite_local,
+			"document",
+			unchanged=lambda path: path.read_text(encoding="utf-8") == content,
+			write=lambda path: path.write_text(content, encoding="utf-8"),
+		)
 	except (ClaudeProjectsError, OSError, UnicodeDecodeError) as exception:
 		return FileResult(document.file_name, "error", detail=str(exception))
 

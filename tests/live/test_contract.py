@@ -233,3 +233,35 @@ def test_a_project_round_trips(client):
 
 	with pytest.raises(NotFoundError):
 		client.get_project(created.uuid)
+
+
+@skip_unless_live
+def test_uploaded_files_can_be_listed(client, project):
+	"""The files endpoint (observed 2026-09-18) answers for a project with no uploads too, with a bare array rather than a 404 or an envelope."""
+	assert client.list_uploaded_files(project) == []
+
+
+@skip_unless_live
+def test_an_upload_downloads_as_its_original_bytes(client):
+	"""Read-only: finds the first project on the account that holds an upload, because nothing here can create one.
+
+	Skipped when no project has any, which proves nothing either way; upload a PDF to a private project to make it run.
+	"""
+	uploads = []
+	for candidate in client.list_projects():
+		uploads = [upload for upload in client.list_uploaded_files(candidate.uuid) if upload.download_url]
+		if uploads:
+			break
+
+	if not uploads:
+		pytest.skip("no project on this account holds an uploaded file")
+
+	upload = uploads[0]
+	data = client.download_uploaded_file(upload)
+
+	assert data, "an empty body is not a file"
+	if upload.file_kind == "document" and upload.file_name.lower().endswith(".pdf"):
+		assert data.startswith(b"%PDF"), "a PDF original should start with the PDF magic bytes; anything else is a login page or a preview"
+
+	if upload.size_bytes is not None:
+		assert len(data) == upload.size_bytes, "size_bytes in the listing should be the byte count of the original"

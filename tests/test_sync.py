@@ -1,5 +1,8 @@
+from pathlib import Path
+
 import pytest
 
+from claude_projects_mcp.errors import ApiError, NotFoundError
 from claude_projects_mcp.sync import PushOptions, pull, push
 
 from .conftest import PROJECT
@@ -248,3 +251,86 @@ class TestPush:
 			"b.md": "created",
 			"c.md": "created",
 		}
+
+
+class TestPullUploads:
+	"""Files uploaded through the web UI come down as bytes, next to the documents, so a pull is a whole copy of the project."""
+
+	def test_writes_an_upload_as_bytes_next_to_the_documents(self, api, client, tmp_path):
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		results = pull(client, PROJECT, tmp_path)
+
+		assert (tmp_path / "report.pdf").read_bytes() == b"%PDF-1.4 report"
+		assert statuses(results) == {"notes.md": "written", "report.pdf": "written"}
+
+	def test_an_upload_is_marked_as_such(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		result = pull(client, PROJECT, tmp_path)[0]
+
+		assert result.kind == "upload"
+		assert result.local_path == str(tmp_path / "report.pdf")
+
+	def test_a_document_is_marked_as_such(self, api, client, tmp_path):
+		api.add_document(PROJECT, "notes.md", "hello")
+
+		assert pull(client, PROJECT, tmp_path)[0].kind == "document"
+
+	def test_identical_bytes_are_left_untouched(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF same")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF same")
+
+		assert statuses(pull(client, PROJECT, tmp_path)) == {"report.pdf": "unchanged"}
+
+	def test_differing_local_bytes_are_kept_unless_overwrite_is_asked_for(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF remote")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF local")
+
+		assert statuses(pull(client, PROJECT, tmp_path)) == {"report.pdf": "skipped_exists"}
+		assert (tmp_path / "report.pdf").read_bytes() == b"%PDF local"
+		assert statuses(pull(client, PROJECT, tmp_path, overwrite_local=True)) == {"report.pdf": "written"}
+		assert (tmp_path / "report.pdf").read_bytes() == b"%PDF remote"
+
+	def test_a_document_and_an_upload_sharing_a_name_get_distinct_files(self, api, client, tmp_path):
+		api.add_document(PROJECT, "report.pdf", "text that only pretends to be a PDF")
+		api.add_upload(PROJECT, "report.pdf", b"%PDF real")
+
+		results = pull(client, PROJECT, tmp_path)
+
+		paths = {result.local_path for result in results}
+		assert len(paths) == 2
+		assert all(Path(path).exists() for path in paths)
+
+	def test_a_failing_download_does_not_stop_the_others(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "fine.pdf", b"one")
+		api.add_upload(PROJECT, "broken.pdf", b"two")
+		# Newest first, so the fault lands on broken.pdf.
+		api.fail_once("GET", "/document_pdf$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		results = statuses(pull(client, PROJECT, tmp_path))
+
+		assert results == {"broken.pdf": "error", "fine.pdf": "written"}
+
+	def test_an_unavailable_files_listing_is_one_error_result_beside_the_documents(self, api, client, tmp_path):
+		"""The documents are already worth writing by then, so the failure rides along in the results instead of throwing them away."""
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.fail_once("GET", "/files$", NotFoundError("Not found (HTTP 404)"))
+
+		results = pull(client, PROJECT, tmp_path)
+
+		assert statuses(results)["notes.md"] == "written"
+		errors = [result for result in results if result.status == "error"]
+		assert len(errors) == 1
+		assert errors[0].kind == "upload"
+		assert "could not be listed" in errors[0].detail
+
+	def test_an_upload_without_a_downloadable_original_is_an_error_result(self, api, client, tmp_path):
+		"""An image offers only a preview, which is not the file, so nothing is written under its name."""
+		api.add_upload(PROJECT, "photo.png", b"png bytes", file_kind="image")
+
+		results = pull(client, PROJECT, tmp_path)
+
+		assert statuses(results) == {"photo.png": "error"}
+		assert not (tmp_path / "photo.png").exists()

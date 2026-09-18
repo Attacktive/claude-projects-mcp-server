@@ -11,7 +11,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from claude_projects_mcp.client import ClaudeProjectsClient
 from claude_projects_mcp.config import Settings
-from claude_projects_mcp.errors import ApiError
+from claude_projects_mcp.errors import ApiError, NotFoundError
 from claude_projects_mcp.server import build_server
 
 from .conftest import ORGANIZATION, PROJECT, call
@@ -171,6 +171,71 @@ class TestListDocs:
 
 		assert result["knowledge"]["search_mode"] is True
 		assert "warning" not in result
+
+	async def test_lists_uploaded_files_beside_the_documents(self, api, server):
+		api.add_document(PROJECT, "notes.md", "hello")
+		uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report", page_count=7)
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert result["uploaded_files"] == [
+			{
+				"uuid": uuid,
+				"file_name": "report.pdf",
+				"file_kind": "document",
+				"created_at": result["uploaded_files"][0]["created_at"],
+				"size_bytes": len(b"%PDF-1.4 report"),
+				"page_count": 7,
+			}
+		]
+
+	async def test_uploads_alone_are_not_a_warning(self, api, server):
+		"""They are listed, so nothing is hidden; the knowledge size simply includes them."""
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert "warning" not in result
+		assert result["knowledge"]["size"] == len("hello") + len(b"%PDF-1.4 report")
+
+	async def test_an_unexplained_shortfall_warns(self, api, server):
+		"""The gap the real API showed on 2026-09-18: the documents do not add up to the knowledge size and nothing listed accounts for the rest."""
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.unlisted_knowledge[PROJECT] = 5_884
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert result["uploaded_files"] == []
+		assert "5,884" in result["warning"]
+		assert "unaccounted" in result["warning"]
+
+	async def test_a_sum_exceeding_the_reported_size_is_not_a_shortfall(self, api, server):
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.unlisted_knowledge[PROJECT] = -2
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert "warning" not in result
+
+	async def test_a_document_without_a_token_count_makes_the_sum_unknowable(self, api, server):
+		api.list_includes_token_counts = False
+		api.add_document(PROJECT, "notes.md", "hello")
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert "estimated_token_count" in result["warning"]
+		assert "could not be checked" in result["warning"]
+
+	async def test_an_unavailable_files_listing_warns_and_omits_the_key(self, api, server):
+		"""Absent means unknown; an empty list would claim there are none."""
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.fail_once("GET", "/files$", NotFoundError("Not found (HTTP 404)"))
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert "uploaded_files" not in result
+		assert "uploaded files could not be checked" in result["warning"].lower()
 
 
 class TestReadDoc:
@@ -523,6 +588,17 @@ class TestPullDocs:
 		assert result["results"][0]["file_name"] == "notes.md"
 		assert result["results"][0]["status"] == "written"
 
+	async def test_reports_uploads_with_their_kind(self, api, server, tmp_path):
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+		destination = tmp_path / "out"
+
+		result = await call(server, "pull_documents", project_id=PROJECT, destination_directory=str(destination))
+
+		assert {row["file_name"]: row["kind"] for row in result["results"]} == {"notes.md": "document", "report.pdf": "upload"}
+		assert (destination / "report.pdf").read_bytes() == b"%PDF-1.4 report"
+		assert result["summary"] == {"written": 2}
+
 
 class TestPushDocs:
 	async def test_uploads_and_summarises(self, api, server, tmp_path):
@@ -649,6 +725,56 @@ class TestProjectTools:
 
 		assert result["backup_paths"] == []
 		assert PROJECT not in api.projects
+		assert "warning" not in result
+
+	async def test_uploads_are_backed_up_as_bytes_before_the_project_goes(self, api, server):
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		result = await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		saved = {Path(path).read_bytes() for path in result["backup_paths"]}
+		assert saved == {b"hello", b"%PDF-1.4 report"}
+		assert PROJECT not in api.projects
+
+	async def test_a_failed_upload_download_leaves_the_project_standing(self, api, server):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+		api.fail_once("GET", "/document_pdf$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert PROJECT in api.projects
+		assert "report.pdf" in str(exception_info.value)
+
+	async def test_a_failed_files_listing_leaves_the_project_standing(self, api, server):
+		api.fail_once("GET", "/files$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		with pytest.raises(ToolError):
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert PROJECT in api.projects
+
+	async def test_a_missing_files_endpoint_leaves_the_project_standing(self, api, server):
+		"""A 404 there is unexplained, not permission: the endpoint answers an empty array for a project with no uploads, so nothing may be deleted on it."""
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.fail_once("GET", "/files$", NotFoundError("Not found (HTTP 404)"))
+
+		with pytest.raises(ToolError):
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert PROJECT in api.projects
+
+	async def test_an_upload_with_no_original_leaves_the_project_standing_and_points_at_the_web_ui(self, api, server):
+		"""An image offers only a preview, which is no backup of the file, so the project has to be dealt with where the file can be seen."""
+		api.add_upload(PROJECT, "photo.png", b"png bytes", file_kind="image")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert PROJECT in api.projects
+		assert "photo.png" in str(exception_info.value)
+		assert "web UI" in str(exception_info.value)
 
 	async def test_listed_projects_report_their_privacy(self, server):
 		listed = (await call(server, "list_projects"))["projects"]

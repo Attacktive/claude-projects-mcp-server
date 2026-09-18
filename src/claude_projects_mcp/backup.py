@@ -30,6 +30,16 @@ class BackupStore:
 
 		Raises BackupError rather than returning None on failure, because every caller treats a successful backup as the precondition for mutating anything remote.
 		"""
+		return self._write(project_id, file_name, lambda path: path.write_text(content, encoding="utf-8"))
+
+	def save_bytes(self, project_id: str, file_name: str, data: bytes) -> Path:
+		"""Write `data` untouched to a new file and return its path.
+
+		For files uploaded through the web UI, which are bytes rather than text; the same append-only rules apply.
+		"""
+		return self._write(project_id, file_name, lambda path: path.write_bytes(data))
+
+	def _write(self, project_id: str, file_name: str, write: Callable[[Path], object]) -> Path:
 		stamp = self._now().astimezone(UTC).strftime(_STAMP_FORMAT)
 		directory = safe_child(self._root, sanitize(project_id, fallback="project", default_suffix=None))
 		target = safe_child(directory, f"{stamp}--{sanitize(file_name)}")
@@ -37,7 +47,7 @@ class BackupStore:
 		try:
 			directory.mkdir(parents=True, exist_ok=True)
 			path = _unique(target)
-			path.write_text(content, encoding="utf-8")
+			write(path)
 		except OSError as exception:
 			raise BackupError(f"Could not write a backup to {target}: {exception}") from exception
 

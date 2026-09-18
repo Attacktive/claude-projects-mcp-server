@@ -44,6 +44,7 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
   `list_documents`, `pull_documents`, and `push_documents` handle text documents only, while a PDF uploaded through the web UI counts toward the project's knowledge size but is never listed, copied, or written.
   Observed 2026-09-18 while copying a project between two organizations: `list_documents` returned two Markdown documents totaling 13,757 tokens against a reported knowledge size of 19,641, and the missing 5,884 tokens were two PDF files that only the web UI showed.
   A pull-and-push migration therefore drops every upload without a word.
+  The browser lists them through `/organizations/{organization}/projects/{uuid}/files`, a sibling of the documents endpoint (observed 2026-09-18), which is where support would start.
   Until uploads are read and written, `list_documents` should at least warn when the listed documents do not add up to the reported knowledge size.
 
 ## Setup

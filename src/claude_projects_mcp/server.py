@@ -34,9 +34,9 @@ For more than a couple of edits, prefer pull_documents to a folder, edit the fil
 tools, then push_documents back — it is far cheaper than moving whole documents through tool
 calls one at a time.
 
-Everything here sees text documents only. A file uploaded through the web UI, such as a PDF,
-counts toward the project's knowledge size but is never listed, pulled, pushed, or backed up,
-so a pull-and-push copy is not a full migration and delete_project destroys uploads with no
+Every document tool here sees text documents only. A file uploaded through the web UI, such as
+a PDF, counts toward the project's knowledge size but is never listed, pulled, pushed, or backed
+up, so a pull-and-push copy is not a full migration and delete_project destroys uploads with no
 backup. Before either, tell the user to check the project for uploads in the web UI.
 
 A project's knowledge has two lines, both reported by list_documents: a search threshold, past

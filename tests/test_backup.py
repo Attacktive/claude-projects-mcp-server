@@ -119,3 +119,10 @@ def test_an_unwritable_location_raises_backup_error_for_bytes_too(tmp_path):
 
 	with pytest.raises(BackupError):
 		store.save_bytes(PROJECT, "report.pdf", b"x")
+
+
+def test_a_bytes_backup_keeps_an_extensionless_name(store):
+	"""A `.md` suffix on PDF bytes would send whoever restores it looking for markdown."""
+	path = store.save_bytes(PROJECT, "scan", b"%PDF-1.4 scan")
+
+	assert path.name == "20260806T162453Z--scan"

@@ -614,8 +614,14 @@ def _backup_every_upload(client: ClaudeProjectsClient, backups: BackupStore, pro
 
 	The listing itself failing propagates too: a 404 there is unexplained rather than "no uploads", since the endpoint answers an empty array for a project without any.
 	"""
+	try:
+		uploads = client.list_uploaded_files(project_id)
+	except ClaudeProjectsError as exception:
+		# Left bare, a 404 here would read as "the project does not exist" rather than as the listing that failed.
+		raise BackupError(f"Could not list the project's uploaded files to back them up, so nothing was deleted: {exception}") from exception
+
 	saved = []
-	for upload in client.list_uploaded_files(project_id):
+	for upload in uploads:
 		try:
 			data = client.download_uploaded_file(upload)
 		except ClaudeProjectsError as exception:

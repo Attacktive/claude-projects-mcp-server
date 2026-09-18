@@ -334,3 +334,12 @@ class TestPullUploads:
 
 		assert statuses(results) == {"photo.png": "error"}
 		assert not (tmp_path / "photo.png").exists()
+
+	def test_an_upload_without_an_extension_keeps_its_name(self, api, client, tmp_path):
+		"""Documents get `.md` by default because the web UI renders by extension; a binary upload is whatever it is."""
+		api.add_upload(PROJECT, "scan", b"%PDF-1.4 scan")
+
+		results = pull(client, PROJECT, tmp_path)
+
+		assert statuses(results) == {"scan": "written"}
+		assert (tmp_path / "scan").read_bytes() == b"%PDF-1.4 scan"

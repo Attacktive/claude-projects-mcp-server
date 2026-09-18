@@ -2,7 +2,7 @@
 
 Claude Code is file-native: pulling once, editing with ordinary tools, and pushing backbeats pushing whole documents through tool calls one at a time.
 
-Both directions see text documents only: a file uploaded through the web UI is not in the documents listing, so a pull-and-push copy is not a full migration.
+Pulling brings down the documents and the files uploaded through the web UI; pushing carries text documents only, because nothing here can upload a file, so a pull-and-push copy is not a full migration.
 
 Both directions are deliberately conservative.
 Neither deletes anything the other side is missing, and neither overwrites differing content without being asked.
@@ -69,7 +69,8 @@ def pull(
 
 	# One namespace for both kinds, so a document and an upload sharing a name cannot overwrite each other.
 	names = {document.uuid: sanitize(document.file_name, fallback=document.uuid) for document in documents}
-	names.update({upload.uuid: sanitize(upload.file_name, fallback=upload.uuid) for upload in uploads})
+	# No `.md` default for an upload: that suffix exists for documents the web UI renders by extension, and would mislabel a PDF.
+	names.update({upload.uuid: sanitize(upload.file_name, fallback=upload.uuid, default_suffix=None) for upload in uploads})
 	local_names = deduplicate(names)
 
 	results = []

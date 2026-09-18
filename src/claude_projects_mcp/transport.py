@@ -43,6 +43,7 @@ class Transport(Protocol):
 		"""GET a host-relative URL, as the files listing hands them out, and return the body untouched.
 
 		Resolved against the base URL's origin rather than appended to its path: the URLs already start with the `/api` that the default base URL ends with.
+		A base URL override that carries a path of its own therefore loses that path here, while `request` keeps it; the setting is documented as choosing the host, not a prefix.
 		"""
 		...
 
@@ -132,7 +133,8 @@ class CurlCffiTransport:
 		# The files listing hands out host-relative URLs that already start with the `/api` the base URL ends with (observed 2026-09-18), so they resolve against the origin rather than appending to the path.
 		resolved = urljoin(self._base_url, url)
 
-		# The session cookie rides every request this session makes, so a listing that ever hands out a foreign URL must not be followed with it.
+		# The session cookie is a plain header on every request this session sends, so a listing that ever hands out a foreign URL must not be asked for with it.
+		# A redirect issued by claude.ai itself is still followed, and libcurl drops the header on a host change; only what we send first is guarded here.
 		if _origin_of(resolved) != _origin_of(self._base_url):
 			raise ApiError(f"Refusing to fetch {url!r}: it is on a different origin from {self._base_url}, and the session key must not travel there.", status=0)
 

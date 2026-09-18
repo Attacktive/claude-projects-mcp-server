@@ -747,23 +747,27 @@ class TestProjectTools:
 		assert PROJECT in api.projects
 		assert "report.pdf" in str(exception_info.value)
 
-	async def test_a_failed_files_listing_leaves_the_project_standing(self, api, server):
+	async def test_a_failed_files_listing_leaves_the_project_standing_and_says_so(self, api, server):
+		"""The bare transport error would read as a problem with the project; the message has to say what stopped and that nothing was deleted."""
 		api.fail_once("GET", "/files$", ApiError("claude.ai returned HTTP 500.", status=500))
 
-		with pytest.raises(ToolError):
+		with pytest.raises(ToolError) as exception_info:
 			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
 
 		assert PROJECT in api.projects
+		assert "uploaded files" in str(exception_info.value)
+		assert "nothing was deleted" in str(exception_info.value)
 
 	async def test_a_missing_files_endpoint_leaves_the_project_standing(self, api, server):
 		"""A 404 there is unexplained, not permission: the endpoint answers an empty array for a project with no uploads, so nothing may be deleted on it."""
 		api.add_document(PROJECT, "notes.md", "hello")
 		api.fail_once("GET", "/files$", NotFoundError("Not found (HTTP 404)"))
 
-		with pytest.raises(ToolError):
+		with pytest.raises(ToolError) as exception_info:
 			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
 
 		assert PROJECT in api.projects
+		assert "nothing was deleted" in str(exception_info.value)
 
 	async def test_an_upload_with_no_original_leaves_the_project_standing_and_points_at_the_web_ui(self, api, server):
 		"""An image offers only a preview, which is no backup of the file, so the project has to be dealt with where the file can be seen."""

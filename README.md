@@ -11,7 +11,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 438 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All seventeen tools are implemented and covered by 440 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
 Files uploaded through the web UI, such as PDFs, are listed, pulled, and backed up before a deletion, but that path is built against a captured response shape and has not yet been run against a real upload (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
@@ -63,6 +63,9 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
   Adding or replacing a PDF means the web UI until the upload endpoint is observed, and a pull-and-push copy therefore carries the documents only.
 - Uploads that are not documents cannot be read either.
   An image offers only a preview and a thumbnail, neither of which is the file, so `pull_documents` reports it as an error and `delete_project` refuses until it is removed in the web UI; only a PDF has been observed so far, so what other kinds offer is unknown.
+  An upload that is itself an HTML file would be refused the same way, since the download path treats an HTML body as a login page served in place of the file.
+- Whether the files listing truncates is unknown.
+  It is a bare array like the documents listing, so it cannot say "that is all of them", and `delete_project` now relies on it before an irreversible delete; a project with many uploads is the case to check.
 - Capacity refusals rank documents only.
   `capacity.py` cannot name an upload worth removing, so a project that is full because of uploads is told to compact the wrong things, or that there is nothing else to compact; `list_documents` at least shows the uploads with their sizes.
 

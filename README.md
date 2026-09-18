@@ -38,6 +38,14 @@ Scheduled tasks (observed 2026-08-08) sit at `/organizations/{organization}/cowo
 
 Response shapes captured from the real API live in `tests/fixtures/` and are asserted against by `tests/test_fixtures.py`, which stops the in-memory fake drifting away from what claude.ai actually sends.
 
+## To do
+
+- Uploaded files are invisible to this server.
+  `list_documents`, `pull_documents`, and `push_documents` handle text documents only, while a PDF uploaded through the web UI counts toward the project's knowledge size but is never listed, copied, or written.
+  Observed 2026-09-18 while copying a project between two organizations: `list_documents` returned two Markdown documents totaling 13,757 tokens against a reported knowledge size of 19,641, and the missing 5,884 tokens were two PDF files that only the web UI showed.
+  A pull-and-push migration therefore drops every upload without a word.
+  Until uploads are read and written, `list_documents` should at least warn when the listed documents do not add up to the reported knowledge size.
+
 ## Setup
 
 Everything below runs through [`uv`](https://docs.astral.sh/uv/) — `uvx` ships with it — so install that first:

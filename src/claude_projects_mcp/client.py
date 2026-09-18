@@ -351,12 +351,16 @@ class ClaudeProjectsClient:
 	def download_uploaded_file(self, upload: UploadedFile) -> bytes:
 		"""The original bytes of an upload.
 
-		NotFoundError when the listing offered no original to fetch, and ApiError when what came back is not the size the listing promised, which is the one check the listing makes possible.
+		NotFoundError when the listing offered no original to fetch.
+		ApiError when what came back is not the size the listing promised, or is empty when the listing promised no size at all, since no file has zero bytes.
 		"""
 		if upload.download_url is None:
 			raise NotFoundError(f"{upload.file_name!r} ({upload.uuid}) has no downloadable original: the files listing offers one for a document such as a PDF, but only a preview for anything else, and a preview is not the file.")
 
 		data = self._request_bytes(upload.download_url)
+		if upload.size_bytes is None and not data:
+			raise ApiError(f"Downloading {upload.file_name!r} ({upload.uuid}) returned an empty body and the listing gave no size to check it against; no file has zero bytes, so refusing to treat that as the file.", status=0)
+
 		if upload.size_bytes is not None and len(data) != upload.size_bytes:
 			raise ApiError(f"Downloading {upload.file_name!r} ({upload.uuid}) returned {len(data):,} bytes, but the listing said {upload.size_bytes:,}; refusing to treat that as the file.", status=0)
 

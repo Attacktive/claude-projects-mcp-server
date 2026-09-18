@@ -93,6 +93,10 @@ class TestRegistration:
 	async def test_the_server_instructions_ask_for_warnings_to_be_relayed(self, server):
 		assert "warning" in server.instructions and "verbatim" in server.instructions
 
+	async def test_the_server_instructions_say_a_deletion_stops_when_an_upload_cannot_be_backed_up(self, server):
+		"""The per-tool description says so too, but a model that read only the instructions would call the deletion safe and then meet an unexplained error."""
+		assert "cannot be backed up" in server.instructions
+
 
 class TestProjectResolution:
 	async def test_the_named_project_is_the_one_acted_on(self, api, server):
@@ -178,16 +182,15 @@ class TestListDocs:
 
 		result = await call(server, "list_documents", project_id=PROJECT)
 
-		assert result["uploaded_files"] == [
-			{
-				"uuid": uuid,
-				"file_name": "report.pdf",
-				"file_kind": "document",
-				"created_at": result["uploaded_files"][0]["created_at"],
-				"size_bytes": len(b"%PDF-1.4 report"),
-				"page_count": 7,
-			}
-		]
+		[listed] = result["uploaded_files"]
+		assert isinstance(listed.pop("created_at"), str)
+		assert listed == {
+			"uuid": uuid,
+			"file_name": "report.pdf",
+			"file_kind": "document",
+			"size_bytes": len(b"%PDF-1.4 report"),
+			"page_count": 7,
+		}
 
 	async def test_uploads_alone_are_not_a_warning(self, api, server):
 		"""They are listed, so nothing is hidden; the knowledge size simply includes them."""
@@ -779,6 +782,82 @@ class TestProjectTools:
 		assert PROJECT in api.projects
 		assert "photo.png" in str(exception_info.value)
 		assert "web UI" in str(exception_info.value)
+
+	async def test_an_upload_whose_size_is_unknown_leaves_the_project_standing(self, api, server):
+		"""Without size_bytes nothing can confirm the backup is the whole file, and an unverifiable backup is no backup on the one path that cannot be undone."""
+		api.list_includes_sizes = False
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert PROJECT in api.projects
+		assert "report.pdf" in str(exception_info.value)
+		assert "nothing was deleted" in str(exception_info.value)
+
+	async def test_an_unverifiable_upload_stops_the_deletion_before_any_backup_is_written(self, api, server, tmp_path):
+		"""The store is append-only, so a refusal after the documents were copied would leave a fresh orphan set on every retry."""
+		api.list_includes_sizes = False
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		with pytest.raises(ToolError):
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert PROJECT in api.projects
+		assert not list((tmp_path / "trash").rglob("*")), "nothing may be written before the uploads are known to be backable"
+
+	async def test_an_upload_with_no_original_is_named_as_such_even_without_a_size(self, api, server):
+		"""Both checks fail for an image the listing gives no size for; the missing original is the reason the tool description promises."""
+		api.list_includes_sizes = False
+		api.add_upload(PROJECT, "photo.png", b"png bytes", file_kind="image")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert "no downloadable original" in str(exception_info.value)
+
+	async def test_an_upload_listed_at_zero_bytes_stops_the_deletion(self, api, server):
+		"""A size of zero verifies nothing, since no file has zero bytes; on the one path that cannot be undone that is as good as no size."""
+		api.add_upload(PROJECT, "empty.pdf", b"")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert PROJECT in api.projects
+		assert "empty.pdf" in str(exception_info.value)
+		assert "nothing was deleted" in str(exception_info.value)
+
+	async def test_an_upload_added_while_the_documents_are_backed_up_is_backed_up_too(self, api, server):
+		"""Checking the uploads before any backup is written must not mean deleting from a list that went stale while the documents were copied."""
+		api.add_document(PROJECT, "notes.md", "hello")
+		listing = api.request
+
+		def request_and_then_upload(method, path, **arguments):
+			response = listing(method, path, **arguments)
+			if path.endswith("/docs"):
+				api.add_upload(PROJECT, "late.pdf", b"%PDF late")
+
+			return response
+
+		api.request = request_and_then_upload
+
+		result = await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		saved = {Path(path).read_bytes() for path in result["backup_paths"]}
+		assert b"%PDF late" in saved
+		assert PROJECT not in api.projects
+
+	async def test_every_unbackable_upload_is_named_in_one_refusal(self, api, server):
+		"""One attempt per offending file would cost a full round trip each; the listing already shows them all."""
+		api.add_upload(PROJECT, "photo.png", b"png bytes", file_kind="image")
+		api.add_upload(PROJECT, "diagram.png", b"more png bytes", file_kind="image")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert "photo.png" in str(exception_info.value)
+		assert "diagram.png" in str(exception_info.value)
 
 	async def test_listed_projects_report_their_privacy(self, server):
 		listed = (await call(server, "list_projects"))["projects"]

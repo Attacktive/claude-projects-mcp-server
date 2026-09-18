@@ -38,6 +38,21 @@ class TestPull:
 
 		assert result.local_path == str(tmp_path / "notes.md")
 
+	def test_a_document_stored_under_another_name_says_so(self, api, client, tmp_path):
+		"""push matches local names against remote ones, so a renamed pull would come back as a second document; the result has to warn before that happens."""
+		api.add_document(PROJECT, "분기별사업계획검토보고서" * 10 + ".md", "hello")
+
+		[result] = pull(client, PROJECT, tmp_path)
+
+		assert result.status == "written"
+		assert len(Path(result.local_path).name.encode("utf-8")) <= 200
+		assert "push_documents" in result.detail
+
+	def test_a_document_stored_under_its_own_name_carries_no_detail(self, api, client, tmp_path):
+		api.add_document(PROJECT, "notes.md", "hello")
+
+		assert pull(client, PROJECT, tmp_path)[0].detail is None
+
 	def test_identical_content_is_left_untouched(self, api, client, tmp_path):
 		api.add_document(PROJECT, "notes.md", "hello")
 		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
@@ -293,6 +308,21 @@ class TestPullUploads:
 		assert statuses(pull(client, PROJECT, tmp_path, overwrite_local=True)) == {"report.pdf": "written"}
 		assert (tmp_path / "report.pdf").read_bytes() == b"%PDF remote"
 
+	def test_a_local_copy_of_another_size_is_skipped_without_a_download(self, api, client, tmp_path):
+		"""The listing's size_bytes settles "differs" on its own, so a routine re-pull of a big PDF does not move it only to learn that it is being kept."""
+		api.add_upload(PROJECT, "report.pdf", b"%PDF remote")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF local copy")
+
+		assert statuses(pull(client, PROJECT, tmp_path)) == {"report.pdf": "skipped_exists"}
+		assert not [entry for entry in api.log if "document_pdf" in entry[1]], "nothing needed downloading"
+
+	def test_a_local_copy_of_the_same_size_is_still_compared_byte_for_byte(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF remote")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF loca1!")
+
+		assert statuses(pull(client, PROJECT, tmp_path)) == {"report.pdf": "skipped_exists"}
+		assert [entry for entry in api.log if "document_pdf" in entry[1]], "the same size is not the same bytes"
+
 	def test_a_document_and_an_upload_sharing_a_name_get_distinct_files(self, api, client, tmp_path):
 		api.add_document(PROJECT, "report.pdf", "text that only pretends to be a PDF")
 		api.add_upload(PROJECT, "report.pdf", b"%PDF real")
@@ -335,6 +365,16 @@ class TestPullUploads:
 		assert statuses(results) == {"photo.png": "error"}
 		assert not (tmp_path / "photo.png").exists()
 
+	def test_a_local_copy_beside_an_upload_with_no_original_is_still_an_error(self, api, client, tmp_path):
+		"""The size shortcut must not turn "nothing to download" into advice to pass overwrite_local, since there is no remote version to take."""
+		api.add_upload(PROJECT, "photo.png", b"png bytes", file_kind="image")
+		(tmp_path / "photo.png").write_bytes(b"a different png")
+
+		[result] = pull(client, PROJECT, tmp_path)
+
+		assert result.status == "error"
+		assert "no downloadable original" in result.detail
+
 	def test_an_upload_without_an_extension_keeps_its_name(self, api, client, tmp_path):
 		"""Documents get `.md` by default because the web UI renders by extension; a binary upload is whatever it is."""
 		api.add_upload(PROJECT, "scan", b"%PDF-1.4 scan")
@@ -343,3 +383,10 @@ class TestPullUploads:
 
 		assert statuses(results) == {"scan": "written"}
 		assert (tmp_path / "scan").read_bytes() == b"%PDF-1.4 scan"
+
+	def test_an_upload_whose_size_is_unknown_is_still_pulled(self, api, client, tmp_path):
+		"""A pull is reversible, so an unverified copy is worth having; only delete_project holds out for a size to check against."""
+		api.list_includes_sizes = False
+		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		assert statuses(pull(client, PROJECT, tmp_path)) == {"report.pdf": "written"}

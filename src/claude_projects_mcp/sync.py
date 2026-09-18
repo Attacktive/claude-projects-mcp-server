@@ -9,7 +9,8 @@ Neither deletes anything the other side is missing, and neither overwrites diffe
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import cache
 from pathlib import Path
 
 from .client import ClaudeProjectsClient
@@ -75,7 +76,8 @@ def pull(
 
 	results = []
 	for document in documents:
-		results.append(_pull_one(client, project_id, document, destination, local_names[document.uuid], overwrite_local))
+		result = _pull_one(client, project_id, document, destination, local_names[document.uuid], overwrite_local)
+		results.append(_noting_rename(result, document.file_name, local_names[document.uuid]))
 
 	for upload in uploads:
 		results.append(_pull_upload(client, upload, destination, local_names[upload.uuid], overwrite_local))
@@ -84,6 +86,22 @@ def pull(
 		results.append(uploads_failure)
 
 	return results
+
+
+def _noting_rename(result: FileResult, remote_name: str, local_name: str) -> FileResult:
+	"""The result of a document that lives under a name other than its remote one, with a warning attached.
+
+	A name is changed when it holds characters a filesystem rejects, lacks an extension and gains the `.md` default, is spelled in a different Unicode normalization, is too long for a filesystem, or collides with another document's.
+	`push` matches local names against remote ones, so pushing such a file back would create a second document rather than update this one, and every pull says so because every pull is a chance to push.
+	"""
+	if result.status == "error" or local_name == remote_name:
+		return result
+
+	note = f"lives locally as {local_name!r} rather than under its remote name; push_documents matches by name, so pushing this file back would create a new document rather than update this one"
+	if result.detail is None:
+		return replace(result, detail=note)
+
+	return replace(result, detail=f"{result.detail}; {note}")
 
 
 def _uploads_of(client: ClaudeProjectsClient, project_id: str) -> tuple[list[UploadedFile], FileResult | None]:
@@ -105,16 +123,26 @@ def _pull_upload(
 	local_name: str,
 	overwrite_local: bool,
 ) -> FileResult:
-	try:
-		data = client.download_uploaded_file(upload)
+	@cache
+	def data() -> bytes:
+		return client.download_uploaded_file(upload)
 
+	def unchanged(path: Path) -> bool:
+		# A size that disagrees settles it without moving the file; equal sizes still need the bytes to compare.
+		# An upload with no original gets no shortcut, so what comes back is the client's refusal rather than advice to overwrite with a file that cannot be fetched.
+		if upload.download_url is not None and upload.size_bytes is not None and path.stat().st_size != upload.size_bytes:
+			return False
+
+		return path.read_bytes() == data()
+
+	try:
 		return _place(
 			upload.file_name,
 			safe_child(destination, local_name),
 			overwrite_local,
 			"upload",
-			unchanged=lambda path: path.read_bytes() == data,
-			write=lambda path: path.write_bytes(data),
+			unchanged=unchanged,
+			write=lambda path: path.write_bytes(data()),
 		)
 	except (ClaudeProjectsError, OSError) as exception:
 		return FileResult(upload.file_name, "error", detail=str(exception), kind="upload")

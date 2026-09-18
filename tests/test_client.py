@@ -268,6 +268,24 @@ class TestUploadedFiles:
 
 		assert "3" in str(exception_info.value)
 
+	def test_an_empty_download_is_an_api_error_even_when_the_listing_gives_no_size(self, api, client):
+		"""With no size_bytes to compare against, an empty 200 is the one thing that can still be ruled out: no file has zero bytes."""
+		api.add_upload(PROJECT, "report.pdf", b"")
+		upload = replace(client.list_uploaded_files(PROJECT)[0], size_bytes=None)
+
+		with pytest.raises(ApiError) as exception_info:
+			client.download_uploaded_file(upload)
+
+		assert "empty" in str(exception_info.value)
+
+	def test_an_empty_download_matches_a_listing_that_says_zero_bytes(self, api, client):
+		"""When the listing does give a size, the size comparison is the check; it is only the sizeless case that has to rule emptiness out on its own."""
+		api.add_upload(PROJECT, "empty.pdf", b"")
+		upload = client.list_uploaded_files(PROJECT)[0]
+
+		assert upload.size_bytes == 0
+		assert client.download_uploaded_file(upload) == b""
+
 	def test_try_listing_hands_back_the_failure_instead_of_raising(self, api, client):
 		api.fail_once("GET", "/files$", ApiError("claude.ai returned HTTP 500.", status=500))
 

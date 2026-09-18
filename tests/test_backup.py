@@ -126,3 +126,13 @@ def test_a_bytes_backup_keeps_an_extensionless_name(store):
 	path = store.save_bytes(PROJECT, "scan", b"%PDF-1.4 scan")
 
 	assert path.name == "20260806T162453Z--scan"
+
+
+def test_a_long_korean_name_still_gets_a_backup(store):
+	"""The stamp prefix and the uniquifier come on top of the name, so the name has to leave them room on a 255-byte filesystem."""
+	path = store.save_bytes(PROJECT, "분기별_사업_계획_검토_보고서" * 7 + ".pdf", b"%PDF-1.4 long")
+
+	assert path.read_bytes() == b"%PDF-1.4 long"
+	assert path.name.startswith("20260806T162453Z--")
+	assert path.name.endswith(".pdf")
+	assert len(path.name.encode("utf-8")) <= 255, "the limit every common filesystem shares, checked here so the test does not depend on the one it runs on"

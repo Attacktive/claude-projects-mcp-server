@@ -55,6 +55,38 @@ class TestSanitize:
 	def test_collapses_runs_of_replacement_characters(self):
 		assert "--" not in sanitize("a///b.md")
 
+	def test_a_name_too_long_for_a_filesystem_is_cut_to_fit_and_keeps_its_extension(self):
+		"""ext4 caps a name at 255 bytes and Hangul is three bytes a character, so a long Korean title overflows long before it looks long."""
+		stem = "분기별사업계획검토보고서" * 10
+		result = sanitize(f"{stem}.pdf")
+
+		assert len(result.encode("utf-8")) <= 200
+		assert result.endswith(".pdf")
+		assert stem.startswith(result.removesuffix(".pdf")), "the cut lands on a character boundary and keeps the front of the name"
+
+	def test_a_name_that_fits_is_not_cut(self):
+		name = "a" * 200
+		assert sanitize(name, default_suffix=None) == name
+
+	def test_the_default_suffix_counts_toward_the_budget(self):
+		result = sanitize("가" * 100)
+
+		assert result.endswith(".md")
+		assert len(result.encode("utf-8")) <= 200
+
+	def test_a_long_fallback_is_cut_too(self):
+		assert len(sanitize("", fallback="x" * 300, default_suffix=None).encode("utf-8")) <= 200
+
+	def test_a_compound_extension_survives_the_cut(self):
+		assert sanitize("보고서" * 80 + ".tar.gz", default_suffix=None).endswith(".tar.gz")
+
+	def test_a_dotted_title_keeps_only_its_real_extension_when_cut(self):
+		"""Every dot is a suffix boundary to pathlib, so a version number in a title must not be mistaken for an extension worth keeping."""
+		result = sanitize("가" * 80 + ".v1.2 final draft.pdf")
+
+		assert result.endswith(".pdf")
+		assert not result.endswith("draft.pdf")
+
 
 class TestDedupe:
 	def test_distinct_names_are_untouched(self):

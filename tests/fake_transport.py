@@ -46,6 +46,9 @@ class FakeClaudeProjectsApi:
 		# Whether a documents listing carries estimated_token_count. The real API does; switching this off exercises the path where the sum is unknowable.
 		self.list_includes_token_counts = True
 
+		# Whether a files listing carries size_bytes. The capture did; switching this off exercises the path where a download cannot be verified against anything.
+		self.list_includes_sizes = True
+
 		self.organizations: list[dict] = []
 		self.projects: dict[str, dict] = {}
 		self.documents: dict[str, list[dict]] = {}
@@ -505,8 +508,7 @@ class FakeClaudeProjectsApi:
 
 		return public
 
-	@staticmethod
-	def _public_upload(upload: dict, organization_uuid: str) -> dict:
+	def _public_upload(self, upload: dict, organization_uuid: str) -> dict:
 		"""An uploaded file shaped the way the files listing shapes one (observed 2026-09-18).
 
 		A document's original sits under `document_asset`, and the listing never reports a token count, so nothing can add these up to the knowledge size.
@@ -518,10 +520,12 @@ class FakeClaudeProjectsApi:
 			"file_name": upload["file_name"],
 			"file_kind": upload["file_kind"],
 			"created_at": upload["created_at"],
-			"size_bytes": len(upload["_data"]),
 			"preview_asset": None,
 			"document_asset": None,
 		}
+
+		if self.list_includes_sizes:
+			public["size_bytes"] = len(upload["_data"])
 
 		if upload["file_kind"] == "document":
 			public["document_asset"] = {

@@ -37,8 +37,9 @@ calls one at a time.
 Files uploaded through the web UI, such as PDFs, count toward the project's knowledge size
 and are a different kind of thing from a document: list_documents shows them under
 uploaded_files, pull_documents copies them down as bytes, and delete_project backs them up,
-but push_documents cannot write them and nothing here can compact them. Changing or adding
-an upload means the web UI, so a pull-and-push copy carries the documents only.
+but push_documents cannot write them and nothing here can compact them. A deletion stops with
+nothing deleted if any upload cannot be backed up, and the error names the file and why.
+Changing or adding an upload means the web UI, so a pull-and-push copy carries the documents only.
 
 A project's knowledge has two lines, both reported by list_documents: a search threshold, past
 which Claude in the web UI retrieves from the knowledge instead of reading all of it, and a
@@ -198,7 +199,7 @@ def _register_update_project(server: MCPServer, client: ClaudeProjectsClient) ->
 def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
-		description="Delete a project and everything in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every text document and every file uploaded through the web UI is copied to the local backup directory first; if any of that fails, nothing is deleted. An upload with no downloadable original, such as an image, blocks the deletion until it is removed in the web UI.",
+		description="Delete a project and everything in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every text document and every file uploaded through the web UI is copied to the local backup directory first; if any of that fails, nothing is deleted. An upload with no downloadable original, such as an image, or one the listing gives no size for, blocks the deletion until it is removed in the web UI.",
 	)
 	def delete_project(project_id: str, confirm_name: str) -> dict:
 		with translated():
@@ -207,8 +208,12 @@ def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, ba
 				raise ToolError(f"confirm_name does not match. To delete this project pass confirm_name={project.name!r} exactly. Nothing has been changed.")
 
 			# Backing up first is the precondition, not a courtesy: once the project is gone its documents and uploads are unreachable, so a failure here must stop everything.
+			# The uploads are checked before anything is written, because the store is append-only and a refusal after the documents were copied would leave a fresh set of orphans on every retry.
+			_uploads_to_back_up(client, project_id)
 			backup_paths = [str(path) for path in _backup_every_document(client, backups, project_id)]
-			backup_paths.extend(str(path) for path in _backup_every_upload(client, backups, project_id))
+			# Listed again once the documents are done, so an upload added meanwhile is backed up too rather than deleted off a stale list.
+			uploads = _uploads_to_back_up(client, project_id)
+			backup_paths.extend(str(path) for path in _backup_uploads(client, backups, project_id, uploads))
 			client.delete_project(project_id)
 
 		return {
@@ -251,10 +256,22 @@ def _shortfall_warning(stats: KnowledgeStats | None, documents: list[Document], 
 	if stats is None:
 		return None
 
-	uncounted = [document for document in documents if document.estimated_token_count is None]
-	if uncounted:
-		return f"Whether the listed documents account for the knowledge size could not be checked: {len(uncounted)} of them carry no estimated_token_count."
+	warning = _uncounted_warning(documents)
+	if warning is not None:
+		return warning
 
+	return _unexplained_shortfall(stats, documents, uploads)
+
+
+def _uncounted_warning(documents: list[Document]) -> str | None:
+	uncounted = [document for document in documents if document.estimated_token_count is None]
+	if not uncounted:
+		return None
+
+	return f"Whether the listed documents account for the knowledge size could not be checked: {len(uncounted)} of them carry no estimated_token_count, or one that is not a whole number."
+
+
+def _unexplained_shortfall(stats: KnowledgeStats, documents: list[Document], uploads: list[UploadedFile] | None) -> str | None:
 	accounted = sum(document.estimated_token_count or 0 for document in documents)
 	shortfall = stats.size - accounted
 	if shortfall <= 0 or uploads:
@@ -609,10 +626,10 @@ def _backup_every_document(client: ClaudeProjectsClient, backups: BackupStore, p
 	return saved
 
 
-def _backup_every_upload(client: ClaudeProjectsClient, backups: BackupStore, project_id: str) -> list[Path]:
-	"""Fetch every upload's bytes into the backup directory, raising on the first failure so the deletion stops.
+def _uploads_to_back_up(client: ClaudeProjectsClient, project_id: str) -> list[UploadedFile]:
+	"""The project's uploads, once the listing shows every one of them can be backed up; raises BackupError otherwise so the deletion stops before anything is written.
 
-	The listing itself failing propagates too: a 404 there is unexplained rather than "no uploads", since the endpoint answers an empty array for a project without any.
+	The listing itself failing raises too: a 404 there is unexplained rather than "no uploads", since the endpoint answers an empty array for a project without any.
 	"""
 	try:
 		uploads = client.list_uploaded_files(project_id)
@@ -620,6 +637,29 @@ def _backup_every_upload(client: ClaudeProjectsClient, backups: BackupStore, pro
 		# Left bare, a 404 here would read as "the project does not exist" rather than as the listing that failed.
 		raise BackupError(f"Could not list the project's uploaded files to back them up, so nothing was deleted: {exception}") from exception
 
+	problems = [problem for upload in uploads if (problem := _unbackable_because(upload)) is not None]
+	if problems:
+		# Every offender at once, since one attempt per file would cost a full round trip each and the listing already shows them all.
+		raise BackupError(f"These uploaded files cannot be backed up, so nothing was deleted: {' '.join(problems)} Remove them in the web UI first, or delete the project there.")
+
+	return uploads
+
+
+def _unbackable_because(upload: UploadedFile) -> str | None:
+	"""Why an upload cannot be backed up, or None when it can."""
+	if upload.download_url is None:
+		return f"{upload.file_name!r} ({upload.uuid}) has no downloadable original; only a document such as a PDF offers one."
+
+	# The byte count is the only check on what comes back, and an unverifiable backup is no backup on the one path that cannot be undone.
+	# Zero verifies nothing either, since no file has zero bytes.
+	if not upload.size_bytes:
+		return f"{upload.file_name!r} ({upload.uuid}) has no size in the files listing, or a size of zero, so a backup of it could not be verified."
+
+	return None
+
+
+def _backup_uploads(client: ClaudeProjectsClient, backups: BackupStore, project_id: str, uploads: list[UploadedFile]) -> list[Path]:
+	"""Fetch every upload's bytes into the backup directory, raising on the first failure so the deletion stops."""
 	saved = []
 	for upload in uploads:
 		try:

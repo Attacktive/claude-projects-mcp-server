@@ -131,6 +131,14 @@ def test_parse_list_builds_each_item():
 	assert [document.uuid for document in documents] == ["d1", "d2"]
 
 
+class TestDocumentCounts:
+	def test_a_token_count_that_is_not_a_number_reads_as_unknown(self):
+		"""list_documents sums these; a string would fail the whole listing with a bare TypeError rather than the "could not be checked" warning."""
+		document = Document.parse({"uuid": "document-1", "file_name": "notes.md", "estimated_token_count": "1234"})
+
+		assert document.estimated_token_count is None
+
+
 class TestUploadedFile:
 	def test_parses_the_fields_it_needs(self):
 		upload = UploadedFile.parse(
@@ -190,6 +198,20 @@ class TestUploadedFile:
 	def test_parse_list_requires_a_bare_array(self):
 		with pytest.raises(ApiError):
 			UploadedFile.parse_list({"data": []})
+
+	def test_a_size_or_page_count_that_is_not_a_number_reads_as_unknown(self):
+		"""The client does arithmetic on these, so a string from a changed API has to land in the typed None path rather than raise a bare ValueError later."""
+		upload = UploadedFile.parse(
+			{
+				"uuid": "file-1",
+				"file_name": "report.pdf",
+				"size_bytes": "1054702",
+				"document_asset": {"url": "/api/organization-1/files/file-1/document_pdf", "file_variant": "original", "page_count": "7"},
+			}
+		)
+
+		assert upload.size_bytes is None
+		assert upload.page_count is None
 
 	def test_a_document_asset_that_is_not_the_original_is_not_downloadable(self):
 		upload = UploadedFile.parse(

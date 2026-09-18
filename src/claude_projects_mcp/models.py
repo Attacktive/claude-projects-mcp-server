@@ -32,6 +32,17 @@ def _parse_list(raw: Any, kind: str, build) -> list:
 	return [build(item) for item in raw]
 
 
+def _count_or_none(value: Any) -> int | None:
+	"""A token, byte, or page count as a listing reports it, or None for anything that is not a whole number.
+
+	Callers sum, compare, and format these, so a string here would surface later as a bare TypeError or ValueError instead of the typed "unknown" every caller already handles.
+	"""
+	if isinstance(value, int) and not isinstance(value, bool):
+		return value
+
+	return None
+
+
 @dataclass(frozen=True, slots=True)
 class Organization:
 	uuid: str
@@ -133,7 +144,7 @@ class Document:
 			file_name=_require(raw, "file_name", "Document"),
 			content=raw.get("content"),
 			created_at=raw.get("created_at"),
-			estimated_token_count=raw.get("estimated_token_count"),
+			estimated_token_count=_count_or_none(raw.get("estimated_token_count")),
 		)
 
 	@classmethod
@@ -197,14 +208,17 @@ class UploadedFile:
 		# The capture carried the same value under both keys; either one identifies the file.
 		uuid = raw.get("uuid") or _require(raw, "file_uuid", "Uploaded file")
 		document_asset = raw.get("document_asset")
-		page_count = document_asset.get("page_count") if isinstance(document_asset, dict) else None
+		if isinstance(document_asset, dict):
+			page_count = _count_or_none(document_asset.get("page_count"))
+		else:
+			page_count = None
 
 		return cls(
 			uuid=uuid,
 			file_name=_require(raw, "file_name", "Uploaded file"),
 			file_kind=raw.get("file_kind"),
 			created_at=raw.get("created_at"),
-			size_bytes=raw.get("size_bytes"),
+			size_bytes=_count_or_none(raw.get("size_bytes")),
 			page_count=page_count,
 			download_url=_original_url(document_asset),
 		)

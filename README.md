@@ -11,7 +11,8 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 381 tests, and the full read-and-write path has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All seventeen tools are implemented and covered by 381 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+Files uploaded through the web UI, such as PDFs, are outside that path entirely (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
 What that established, and what the implementation now relies on:
@@ -41,11 +42,17 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
 ## To do
 
 - Uploaded files are invisible to this server.
-  `list_documents`, `pull_documents`, and `push_documents` handle text documents only, while a PDF uploaded through the web UI counts toward the project's knowledge size but is never listed, copied, or written.
-  Observed 2026-09-18 while copying a project between two organizations: `list_documents` returned two Markdown documents totaling 13,757 tokens against a reported knowledge size of 19,641, and the missing 5,884 tokens were two PDF files that only the web UI showed.
-  A pull-and-push migration therefore drops every upload without a word.
-  The browser lists them through `/organizations/{organization}/projects/{uuid}/files`, a sibling of the documents endpoint (observed 2026-09-18), which is where support would start.
-  Until uploads are read and written, `list_documents` should at least warn when the listed documents do not add up to the reported knowledge size.
+  Every document tool goes through `/organizations/{organization}/projects/{uuid}/docs`, which carries text documents only, so a PDF uploaded through the web UI counts toward the project's knowledge size but is never listed, copied, written, backed up, or offered for compaction.
+  Observed 2026-09-18 while copying nine projects between two organizations: in one of them, `list_documents` returned two Markdown documents whose `estimated_token_count` summed to 13,757 against a reported knowledge size of 19,641, and the web UI showed two PDF files that would account for the gap.
+  In the other eight projects the summed `estimated_token_count` matched the reported knowledge size exactly, which is what makes a shortfall a usable signal.
+  Three things follow.
+  `delete_project` backs up only what the documents endpoint lists, so a project's uploads are destroyed with no backup.
+  A `pull_documents` and `push_documents` migration drops every upload without a word.
+  A capacity refusal names documents worth compacting, but the ranking in `capacity.py` sees documents only, so a project that is full because of uploads is told to compact the wrong things.
+  The browser lists uploads through `/organizations/{organization}/projects/{uuid}/files`, a sibling of `/docs`, which is where support would start.
+  That listing is a bare JSON array like the others; each entry carries `file_name`, `file_kind` (`document` for a PDF), `created_at`, `size_bytes`, the same value under `uuid` and `file_uuid`, and a `document_asset` whose `token_count` is null, so the listing cannot attribute the gap file by file.
+  `document_asset.url` points at `/api/{organization}/files/{file_uuid}/document_pdf`, which sits outside the project path and already carries the `/api` prefix that the base URL ends with, and the transport accepts JSON bodies only, so fetching one needs a bytes path as well.
+  Until uploads are read and written, `list_documents` should at least warn when the summed `estimated_token_count` of the listed documents falls short of the reported knowledge size, and say that the sum is unknowable when a document carries no count rather than guess.
 
 ## Setup
 
@@ -94,14 +101,14 @@ Run this way, the server finds the `.env` sitting next to the project by itself;
 | `get_project` | One project, including its instructions — which a listing does not carry |
 | `create_project` | Start a project, optionally private and with instructions |
 | `update_project` | Change name, description, or instructions; untouched fields are left alone |
-| `delete_project` | Remove a project **and every document in it** (see Safety) |
-| `list_documents` | Documents in a project, reporting knowledge capacity usage and flagging duplicate file names |
+| `delete_project` | Remove a project **and everything in it**; only its text documents are backed up first (see Safety) |
+| `list_documents` | Text documents in a project, reporting knowledge capacity usage and flagging duplicate file names; uploaded files are not listed (see To do) |
 | `read_document` | One document by uuid or file name |
 | `write_document` | Create, or replace with `overwrite=true` (gated by knowledge capacity) |
 | `rename_document` | Move a document to a new file name; a name already in use needs `overwrite=true` |
 | `delete_document` | Remove a document (always backed up first) |
-| `pull_documents` | Copy a project's documents into a local folder |
-| `push_documents` | Upload a local folder's documents into a project (gated by knowledge capacity) |
+| `pull_documents` | Copy a project's text documents into a local folder; uploaded files are not included (see To do) |
+| `push_documents` | Upload a local folder's text documents into a project (gated by knowledge capacity) |
 | `list_scheduled_tasks` | Scheduled tasks, for one project or the whole account |
 | `get_scheduled_task` | One task, including the prompt it will send |
 | `create_scheduled_task` | Schedule a prompt against a project, or leave it manual-only |
@@ -143,6 +150,7 @@ These are shared team documents, and the API has no server-side undo, so:
 - `write_document` accepts an `expected_uuid` to refuse the write if a teammate changed the document since you read it
 - `rename_document` re-creates the content under the new name before deleting the original — the API has no rename, so a crash midway leaves the document under both names rather than under none
 - `push_documents` never deletes remote documents that are missing locally — it is not a mirror
+- `pull_documents` and `push_documents` move text documents only — a project's uploaded files, such as PDFs, are neither pulled nor pushed, so a pull-and-push copy is not a full migration (see To do)
 
 **Scheduled tasks are the deliberate exception to the backup rule.**
 `delete_scheduled_task` writes nothing to the backup directory before deleting, because a task is a name, a prompt, and a cron line — config that is cheap to retype — rather than content that cannot be reconstructed.
@@ -152,8 +160,10 @@ Running a task is not exposed at all.
 The API has an endpoint for it, but starting a billable Claude run is not something a tool call should be able to do by accident; set a schedule and let Cowork run it, or press the button in the web UI.
 
 `delete_project` is the sharpest tool here, because it takes every document with it.
-It is deliberately awkward: `confirm_name` must match the project's current name exactly, and every document is copied to the backup directory before anything is deleted.
+It is deliberately awkward: `confirm_name` must match the project's current name exactly, and every text document is copied to the backup directory before anything is deleted.
 If that copy fails for any document, the project is left standing.
+Uploaded files are the exception, and not a deliberate one: this server cannot see them (see To do), so a project holding PDFs loses them for good, and the result's `backup_paths` will not mention them.
+Check the project for uploads in the web UI before deleting it.
 
 **The backup directory is not an undo feature.**
 It captures only what *this tool* overwrites, it lives on one machine, and it knows nothing about edits made by teammates in the web UI.

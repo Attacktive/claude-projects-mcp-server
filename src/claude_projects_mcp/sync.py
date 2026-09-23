@@ -9,6 +9,7 @@ Neither deletes anything the other side is missing, and neither overwrites diffe
 """
 
 import math
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cache
@@ -351,10 +352,13 @@ def push(
 	Matches only the files directly inside the folder, and refuses a pattern that reaches elsewhere, because a project's documents are a flat list and recursing would collide names.
 	A file that resolves outside the folder, such as a symbolic link to somewhere else on disk, is reported rather than uploaded.
 	A dry run previews where the real push would stop, from estimated token counts, since it writes nothing to measure.
+	A folder that exists but cannot be read raises, as a missing one does, rather than pushing nothing.
 	"""
 	source = Path(source_directory)
 	if not source.is_dir():
 		raise FileNotFoundError(f"No such directory: {source}")
+
+	_ensure_readable(source)
 
 	if options is None:
 		options = PushOptions()
@@ -368,6 +372,17 @@ def push(
 	context = _PushContext(client, project_id, source.resolve(), by_name(documents), options, preview)
 
 	return _push_all(context, matching_paths)
+
+
+def _ensure_readable(source: Path) -> None:
+	"""Fail the way reading `source` would, because `Path.glob` meets a permission denial by matching nothing, which is indistinguishable from an empty folder.
+
+	Listing a folder takes its read permission and looking inside it takes its search permission, so this lists the folder and looks up its first entry.
+	"""
+	with os.scandir(source) as entries:
+		entry = next(entries, None)
+		if entry is not None:
+			entry.stat(follow_symlinks=False)
 
 
 def _matching_files(source: Path, pattern: str) -> list[Path]:

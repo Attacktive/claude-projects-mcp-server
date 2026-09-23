@@ -6,7 +6,7 @@ import pytest
 from claude_projects_mcp.errors import ApiError, InvalidPatternError, NotFoundError
 from claude_projects_mcp.sync import PushOptions, pull, push
 
-from .conftest import PROJECT
+from .conftest import PROJECT, locked_out, needs_permission_bits
 
 
 def statuses(results):
@@ -235,6 +235,19 @@ class TestPush:
 	def test_a_missing_directory_is_an_error(self, client, tmp_path):
 		with pytest.raises(FileNotFoundError):
 			push(client, PROJECT, tmp_path / "nope")
+
+	@needs_permission_bits
+	@pytest.mark.parametrize("mode", [0o000, 0o444], ids=["unreadable", "listable_but_not_enterable"])
+	def test_a_folder_it_cannot_read_is_an_error_not_an_empty_push(self, api, client, tmp_path, mode):
+		"""`Path.glob` meets a permission denial by matching nothing, which would read as an empty folder and a project already in sync."""
+		source = tmp_path / "locked"
+		source.mkdir()
+		(source / "notes.md").write_text("hello", encoding="utf-8")
+
+		with locked_out(source, mode), pytest.raises(PermissionError):
+			push(client, PROJECT, source)
+
+		assert api.document_names(PROJECT) == []
 
 	def test_an_empty_directory_yields_no_results(self, client, tmp_path):
 		assert push(client, PROJECT, tmp_path) == []

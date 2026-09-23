@@ -14,7 +14,7 @@ from claude_projects_mcp.config import Settings
 from claude_projects_mcp.errors import ApiError, NotFoundError
 from claude_projects_mcp.server import build_server
 
-from .conftest import ORGANIZATION, PROJECT, call
+from .conftest import ORGANIZATION, PROJECT, call, locked_out, needs_permission_bits
 
 pytestmark = pytest.mark.anyio
 
@@ -642,6 +642,19 @@ class TestPushDocs:
 			await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path / "nope"))
 
 		assert "nope" in str(exception_info.value)
+
+	@needs_permission_bits
+	async def test_a_folder_it_cannot_read_is_a_tool_error_naming_it(self, api, server, tmp_path):
+		"""Left to the SDK, the error would reach the model as a bare "Error executing tool" with nothing to act on."""
+		source = tmp_path / "locked"
+		source.mkdir()
+		(source / "notes.md").write_text("hello", encoding="utf-8")
+
+		with locked_out(source, 0o000), pytest.raises(ToolError) as exception_info:
+			await call(server, "push_documents", project_id=PROJECT, source_directory=str(source))
+
+		assert repr(str(source)) in str(exception_info.value)
+		assert api.document_names(PROJECT) == []
 
 	@pytest.mark.parametrize("pattern", ["", ".", "/somewhere/*.md", "**/*.md"])
 	async def test_a_bad_pattern_is_a_tool_error_naming_it(self, server, tmp_path, pattern):

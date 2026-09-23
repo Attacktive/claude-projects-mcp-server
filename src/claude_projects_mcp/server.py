@@ -567,8 +567,8 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 					pattern=pattern,
 					options=options,
 				)
-		except FileNotFoundError as exception:
-			raise ToolError(str(exception)) from exception
+		except OSError as exception:
+			raise ToolError(f"Could not use {source_directory!r} as the source folder: {exception}") from exception
 
 		return with_warning(
 			{

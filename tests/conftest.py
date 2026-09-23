@@ -1,4 +1,8 @@
 import json
+import os
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -10,6 +14,18 @@ from .fake_transport import FakeClaudeProjectsApi
 
 ORGANIZATION = "organization-1"
 PROJECT = "project-1"
+
+needs_permission_bits = pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="Windows has no permission bits for chmod to clear, and root reads a folder whatever they say")
+
+
+@contextmanager
+def locked_out(folder: Path, mode: int) -> Iterator[Path]:
+	"""Give `folder` the permission bits `mode` for the duration, then hand the owner full access back so pytest can clean it up."""
+	folder.chmod(mode)
+	try:
+		yield folder
+	finally:
+		folder.chmod(0o700)
 
 
 @pytest.fixture

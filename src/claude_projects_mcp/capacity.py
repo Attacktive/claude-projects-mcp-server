@@ -45,16 +45,24 @@ def line_of(stats: KnowledgeStats, verdict: Verdict) -> tuple[str, int]:
 	return "its search threshold", stats.search_threshold
 
 
-def crossing(file_name: str, verdict: Verdict, stats: KnowledgeStats, projected: int, added: int) -> str:
-	"""The sentence saying a write would cross the line, or that the project was already past it and the write would add more.
+def crossing(file_name: str, verdict: Verdict, stats: KnowledgeStats, added: int, removed: int) -> str:
+	"""The sentence saying a write would cross the line, or that the project was already past it and a growing write would add more.
 
-	`stats.size` is the size as measured after the write, which is how the gate sees it; the size before is recovered from `added`, while `projected` is the eventual size after replaced copies are removed.
+	`stats.size` is the size as measured after the write, which is how the gate sees it.
+	The size before the write and the final size after replaced copies are removed are recovered from `added` and `removed`.
 	"""
 	line_name, limit = line_of(stats, verdict)
 	previous_size = stats.size - added
+	projected = stats.size - removed
 	if previous_size > limit:
-		net_growth = projected - previous_size
-		return f"The project is already past {line_name} ({previous_size:,} of {limit:,} tokens), and writing {file_name!r} would add {net_growth:,} more."
+		if removed:
+			net_growth = added - removed
+			return f"The project is already past {line_name} ({previous_size:,} of {limit:,} tokens), and writing {file_name!r} ({added:,} tokens) would add {net_growth:,} more, net of the {removed:,} tokens it replaces."
+
+		return f"The project is already past {line_name} ({previous_size:,} of {limit:,} tokens), and writing {file_name!r} would add {added:,} more."
+
+	if removed:
+		return f"Writing {file_name!r} ({added:,} tokens, replacing {removed:,} tokens) would push the project past {line_name}: {projected:,} of {limit:,} tokens, {projected - limit:,} over."
 
 	return f"Writing {file_name!r} ({added:,} tokens) would push the project past {line_name}: {projected:,} of {limit:,} tokens, {projected - limit:,} over."
 
@@ -145,8 +153,8 @@ def refusal(
 	file_name: str,
 	verdict: Verdict,
 	stats: KnowledgeStats,
-	projected: int,
 	added: int,
+	removed: int,
 	candidates_list: list[Candidate],
 ) -> str:
 	"""Format the refusal message for the model when a write exceeds search threshold or maximum size."""
@@ -157,7 +165,7 @@ def refusal(
 		candidates_sentence = f"To make room, shrink this content, or compact one of these with write_document overwrite=true: {'; '.join(formatted_candidates)}."
 
 	parts = [
-		crossing(file_name, verdict, stats, projected, added),
+		crossing(file_name, verdict, stats, added, removed),
 		consequence(verdict),
 		"The write was undone; nothing changed.",
 		candidates_sentence,

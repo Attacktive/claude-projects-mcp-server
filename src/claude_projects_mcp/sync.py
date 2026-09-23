@@ -290,10 +290,16 @@ class _Preview:
 		return f"at the {self.tokens_per_character:.2f} tokens per character this project's documents average"
 
 	def _refusal(self, name: str, verdict: Verdict, after_create: KnowledgeStats, added: int, removed: int) -> str:
+		basis = self._basis()
+		if removed:
+			estimate = f"The new document's {added:,}-token size is estimated {basis} because a dry run writes nothing to measure, while the {removed:,} tokens it replaces come from the project's current document counts."
+		else:
+			estimate = f"The new document's {added:,}-token size is estimated {basis} because a dry run writes nothing to measure."
+
 		sentences = [
-			crossing(name, verdict, after_create, after_create.size - removed, added),
+			crossing(name, verdict, after_create, added, removed),
 			consequence(verdict),
-			f"That figure is estimated {self._basis()}, since a dry run writes nothing to measure.",
+			estimate,
 			"The real push would stop here and write nothing more.",
 			*hint(verdict),
 		]

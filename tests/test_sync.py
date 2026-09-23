@@ -421,7 +421,9 @@ class TestPush:
 		assert statuses(results) == {"big.md": "refused_full"}
 		detail = results[0].detail
 		assert detail is not None
-		assert "The project is already past its search threshold (60 of 50 tokens), and writing 'big.md' would add 5 more." in detail
+		assert "The project is already past its search threshold (60 of 50 tokens), and writing 'big.md' (45 tokens) would add 5 more, net of the 40 tokens it replaces." in detail
+		assert "The new document's 45-token size is estimated at the 1.00 tokens per character this project's documents average" in detail
+		assert "the 40 tokens it replaces come from the project's current document counts" in detail
 
 	def test_a_dry_run_estimates_at_the_rate_the_project_shows(self, api, client, tmp_path):
 		"""The fake counts one token per character; a project holding such a document teaches the preview that rate, and a file it would refuse at that rate is refused."""

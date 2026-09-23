@@ -435,6 +435,31 @@ class TestWriteDoc:
 
 		assert "already past" in str(exception_info.value)
 
+	async def test_growing_overwrite_in_project_already_past_search_threshold_reports_net_growth(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 20)
+		api.add_document(PROJECT, "big.md", "b" * 40)
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "write_document", project_id=PROJECT, file_name="big.md", content="B" * 45, overwrite=True)
+
+		message = str(exception_info.value)
+		assert "The project is already past its search threshold (60 of 50 tokens), and writing 'big.md' (45 tokens) would add 5 more, net of the 40 tokens it replaces." in message
+		assert api.content_of(PROJECT, "big.md") == ["b" * 40]
+
+	async def test_growing_overwrite_in_project_already_past_maximum_reports_net_growth(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 20
+		api.projects[PROJECT]["_max_knowledge_size"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 20)
+		api.add_document(PROJECT, "big.md", "b" * 40)
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "write_document", project_id=PROJECT, file_name="big.md", content="B" * 45, overwrite=True)
+
+		message = str(exception_info.value)
+		assert "The project is already past its maximum (60 of 50 tokens), and writing 'big.md' (45 tokens) would add 5 more, net of the 40 tokens it replaces." in message
+		assert api.content_of(PROJECT, "big.md") == ["b" * 40]
+
 	async def test_rollback_delete_fails_reports_done_with_warning(self, api, server):
 		api.projects[PROJECT]["_search_threshold"] = 50
 		existing_uuid = api.add_document(PROJECT, "notes.md", "a" * 40)

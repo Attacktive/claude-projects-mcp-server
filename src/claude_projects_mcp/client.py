@@ -702,7 +702,7 @@ class ClaudeProjectsClient:
 		projected = context.stats.size - removed
 		_, limit_value = line_of(context.stats, verdict)
 
-		message = refusal(context.file_name, verdict, context.stats, projected, added, candidates_list)
+		message = refusal(context.file_name, verdict, context.stats, added, removed, candidates_list)
 		raise KnowledgeFullError(message, file_name=context.file_name, verdict=verdict, projected=projected, limit=limit_value)
 
 	def replace_document(

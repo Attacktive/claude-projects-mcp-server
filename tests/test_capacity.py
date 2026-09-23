@@ -78,14 +78,16 @@ def test_refusal_crossing_threshold():
 		Candidate(file_name="meeting-log.md", uuid="2", estimated_token_count=9_800, created_at="2026-07-19T00:00:00Z", duplicate=True),
 		Candidate(file_name="glossary.md", uuid="3", estimated_token_count=4_100, created_at="2026-08-01T00:00:00Z", duplicate=False),
 	]
+
 	message = refusal(
 		file_name="notes.md",
 		verdict="search_mode",
 		stats=stats,
-		projected=61_141,
 		added=12_400,
+		removed=0,
 		candidates_list=compaction_candidates,
 	)
+
 	expected = (
 		"Writing 'notes.md' (12,400 tokens) would push the project past its search threshold: 61,141 of 50,000 tokens, 11,141 over. "
 		"Past that line Claude in the web UI retrieves from the project knowledge instead of reading all of it, so a document can go unseen. "
@@ -96,6 +98,7 @@ def test_refusal_crossing_threshold():
 		"'glossary.md' (4,100 tokens, last rewritten 2026-08-01). "
 		"To accept search mode instead, pass allow_search_mode=true."
 	)
+
 	assert message == expected
 
 
@@ -106,27 +109,46 @@ def test_refusal_already_past_threshold():
 		file_name="notes.md",
 		verdict="search_mode",
 		stats=stats,
-		projected=72_832,
 		added=12_400,
+		removed=0,
 		candidates_list=[],
 	)
+
 	assert message.startswith("The project is already past its search threshold (60,432 of 50,000 tokens), and writing 'notes.md' would add 12,400 more.")
 	assert "There is nothing else in the project to compact; shrink this content." in message
 	assert message.endswith("To accept search mode instead, pass allow_search_mode=true.")
 
 
 def test_refusal_already_past_threshold_reports_replacement_net_growth():
-	# Before write: 51,000. Creating the replacement adds 11,000, then deleting the old 10,000 leaves 52,000.
+	# Before write: 51,000.
+	# Creating the replacement adds 11,000, then deleting the old 10,000 leaves 52,000.
 	stats = KnowledgeStats(size=62_000, max_size=2_000_000, search_threshold=50_000, search_mode=True)
 	message = refusal(
 		file_name="notes.md",
 		verdict="search_mode",
 		stats=stats,
-		projected=52_000,
 		added=11_000,
+		removed=10_000,
 		candidates_list=[],
 	)
-	assert message.startswith("The project is already past its search threshold (51,000 of 50,000 tokens), and writing 'notes.md' would add 1,000 more.")
+
+	assert message.startswith("The project is already past its search threshold (51,000 of 50,000 tokens), and writing 'notes.md' (11,000 tokens) would add 1,000 more, net of the 10,000 tokens it replaces.")
+
+
+def test_refusal_crossing_threshold_names_replaced_tokens():
+	# Before write: 45.
+	# Creating the replacement adds 60, then deleting the old 40 leaves 65.
+	stats = KnowledgeStats(size=105, max_size=2_000_000, search_threshold=50, search_mode=True)
+	message = refusal(
+		file_name="big.md",
+		verdict="search_mode",
+		stats=stats,
+		added=60,
+		removed=40,
+		candidates_list=[],
+	)
+
+	assert message.startswith("Writing 'big.md' (60 tokens, replacing 40 tokens) would push the project past its search threshold: 65 of 50 tokens, 15 over.")
 
 
 def test_refusal_crossing_maximum():
@@ -135,10 +157,11 @@ def test_refusal_crossing_maximum():
 		file_name="huge.md",
 		verdict="over_max",
 		stats=stats,
-		projected=2_050_000,
 		added=60_000,
+		removed=0,
 		candidates_list=[],
 	)
+
 	assert "would push the project past its maximum" in message
 	assert "Past that line the web UI refuses to add anything to the project knowledge until something is removed." in message
 	assert "allow_search_mode=true" not in message

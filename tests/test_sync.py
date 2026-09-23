@@ -410,6 +410,19 @@ class TestPush:
 		assert detail is not None
 		assert "already past" in detail
 
+	def test_a_dry_run_over_a_project_already_past_the_line_reports_replacement_net_growth(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 20)
+		api.add_document(PROJECT, "big.md", "b" * 40)
+		(tmp_path / "big.md").write_text("B" * 45, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True, overwrite=True))
+
+		assert statuses(results) == {"big.md": "refused_full"}
+		detail = results[0].detail
+		assert detail is not None
+		assert "The project is already past its search threshold (60 of 50 tokens), and writing 'big.md' would add 5 more." in detail
+
 	def test_a_dry_run_estimates_at_the_rate_the_project_shows(self, api, client, tmp_path):
 		"""The fake counts one token per character; a project holding such a document teaches the preview that rate, and a file it would refuse at that rate is refused."""
 		api.projects[PROJECT]["_search_threshold"] = 50

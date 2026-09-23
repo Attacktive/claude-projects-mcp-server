@@ -115,6 +115,20 @@ def test_refusal_already_past_threshold():
 	assert message.endswith("To accept search mode instead, pass allow_search_mode=true.")
 
 
+def test_refusal_already_past_threshold_reports_replacement_net_growth():
+	# Before write: 51,000. Creating the replacement adds 11,000, then deleting the old 10,000 leaves 52,000.
+	stats = KnowledgeStats(size=62_000, max_size=2_000_000, search_threshold=50_000, search_mode=True)
+	message = refusal(
+		file_name="notes.md",
+		verdict="search_mode",
+		stats=stats,
+		projected=52_000,
+		added=11_000,
+		candidates_list=[],
+	)
+	assert message.startswith("The project is already past its search threshold (51,000 of 50,000 tokens), and writing 'notes.md' would add 1,000 more.")
+
+
 def test_refusal_crossing_maximum():
 	stats = KnowledgeStats(size=2_050_000, max_size=2_000_000, search_threshold=50_000, search_mode=True)
 	message = refusal(

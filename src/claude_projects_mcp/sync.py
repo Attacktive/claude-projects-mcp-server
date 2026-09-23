@@ -292,9 +292,9 @@ class _Preview:
 	def _refusal(self, name: str, verdict: Verdict, after_create: KnowledgeStats, added: int, removed: int) -> str:
 		basis = self._basis()
 		if removed:
-			estimate = f"The new document's {added:,}-token size is estimated {basis} because a dry run writes nothing to measure, while the {removed:,} tokens it replaces come from the project's current document counts."
+			estimate = f"The new document's {added:,}-token size is estimated {basis}, because a dry run writes nothing to measure, while the {removed:,} tokens it replaces come from the project's current document counts."
 		else:
-			estimate = f"The new document's {added:,}-token size is estimated {basis} because a dry run writes nothing to measure."
+			estimate = f"The new document's {added:,}-token size is estimated {basis}, because a dry run writes nothing to measure."
 
 		sentences = [
 			crossing(name, verdict, after_create, added, removed),

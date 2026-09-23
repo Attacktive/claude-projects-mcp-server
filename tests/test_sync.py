@@ -1,8 +1,9 @@
+import sys
 from pathlib import Path
 
 import pytest
 
-from claude_projects_mcp.errors import ApiError, NotFoundError
+from claude_projects_mcp.errors import ApiError, InvalidPatternError, NotFoundError
 from claude_projects_mcp.sync import PushOptions, pull, push
 
 from .conftest import PROJECT
@@ -252,6 +253,237 @@ class TestPush:
 			"c.md": "skipped_full",
 		}
 		assert api.document_names(PROJECT) == ["a.md"]
+
+	@pytest.mark.parametrize("pattern", ["**/*.md", "sub/*.md", "../*.md", "/somewhere/*.md", "/", "..", "**"])
+	def test_a_pattern_that_reaches_into_directories_is_refused(self, api, client, tmp_path, pattern):
+		"""A project's documents are a flat list, so two same-named files at different depths would land as duplicates of one name."""
+		nested = tmp_path / "sub"
+		nested.mkdir()
+		(nested / "top.md").write_text("deep", encoding="utf-8")
+		(tmp_path / "top.md").write_text("shallow", encoding="utf-8")
+
+		with pytest.raises(InvalidPatternError) as exception_info:
+			push(client, PROJECT, tmp_path, pattern=pattern)
+
+		assert repr(pattern) in str(exception_info.value)
+		assert api.document_names(PROJECT) == []
+
+	@pytest.mark.parametrize("pattern", ["", "."])
+	def test_a_pattern_that_names_nothing_is_refused_by_name(self, client, tmp_path, pattern):
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+
+		with pytest.raises(InvalidPatternError) as exception_info:
+			push(client, PROJECT, tmp_path, pattern=pattern)
+
+		assert repr(pattern) in str(exception_info.value)
+
+	@pytest.mark.skipif(sys.platform == "win32", reason="creating a symbolic link needs a privilege on Windows")
+	def test_a_symbolic_link_out_of_the_folder_is_not_uploaded(self, api, client, tmp_path):
+		"""The pull side refuses to write outside its folder; the push side must refuse to read outside its own."""
+		outside = tmp_path / "outside"
+		outside.mkdir()
+		(outside / "secret.md").write_text("not yours", encoding="utf-8")
+		source = tmp_path / "source"
+		source.mkdir()
+		(source / "link.md").symlink_to(outside / "secret.md")
+		(source / "own.md").write_text("mine", encoding="utf-8")
+
+		results = push(client, PROJECT, source)
+
+		assert statuses(results) == {"link.md": "error", "own.md": "created"}
+		assert "outside" in {result.file_name: result.detail for result in results}["link.md"]
+		assert api.document_names(PROJECT) == ["own.md"]
+
+	@pytest.mark.skipif(sys.platform == "win32", reason="creating a symbolic link needs a privilege on Windows")
+	def test_a_symbolic_link_within_the_folder_is_uploaded(self, api, client, tmp_path):
+		(tmp_path / "real.md").write_text("shared", encoding="utf-8")
+		(tmp_path / "alias.md").symlink_to(tmp_path / "real.md")
+
+		results = push(client, PROJECT, tmp_path)
+
+		assert statuses(results) == {"alias.md": "created", "real.md": "created"}
+		assert api.content_of(PROJECT, "alias.md") == ["shared"]
+
+	def test_a_dry_run_stops_where_the_real_push_would(self, api, client, tmp_path):
+		"""The stop is the one outcome worth previewing, so the preview projects the project's size file by file instead of writing and measuring."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
+		(tmp_path / "c.md").write_text("c" * 10, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {
+			"a.md": "created",
+			"b.md": "refused_full",
+			"c.md": "skipped_full",
+		}
+
+		assert "POST" not in api.methods_logged()
+		assert api.document_names(PROJECT) == ["seed.md"]
+		assert "preview" in {result.file_name: result.detail for result in results}["c.md"]
+
+	def test_a_dry_run_refusal_says_it_is_an_estimate_and_names_the_line(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		detail = results[0].detail
+		assert detail is not None
+		assert "dry run" in detail
+		assert "estimated" in detail
+		assert "search threshold" in detail
+		assert "Past that line" in detail
+		assert "allow_search_mode" in detail
+
+	def test_a_dry_run_past_the_maximum_names_that_line_and_offers_no_search_mode(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 20
+		api.projects[PROJECT]["_max_knowledge_size"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True, allow_search_mode=True))
+
+		assert statuses(results) == {"b.md": "refused_full"}
+		detail = results[0].detail
+		assert detail is not None
+		assert "its maximum" in detail
+		assert "allow_search_mode" not in detail
+
+	def test_a_dry_run_with_allow_search_mode_admits_what_the_real_push_would(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True, allow_search_mode=True))
+
+		assert statuses(results) == {"a.md": "created", "b.md": "created"}
+
+	def test_a_dry_run_counts_the_document_a_replacement_removes(self, api, client, tmp_path):
+		"""Replacing frees the old copy's tokens, so a rewrite that grows a document a little still fits."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "big.md", "b" * 40)
+		(tmp_path / "big.md").write_text("B" * 45, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True, overwrite=True))
+
+		assert statuses(results) == {"big.md": "replaced"}
+
+	def test_a_dry_run_counts_every_copy_a_replacement_removes(self, api, client, tmp_path):
+		"""An interrupted save leaves two copies of a name; the real replacement deletes both, so the preview must free both."""
+		api.projects[PROJECT]["_search_threshold"] = 60
+		api.add_document(PROJECT, "big.md", "b" * 40)
+		api.add_document(PROJECT, "big.md", "b" * 40)
+		(tmp_path / "big.md").write_text("B" * 45, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True, overwrite=True))
+
+		assert statuses(results) == {"big.md": "replaced"}
+
+	def test_a_dry_run_over_a_project_already_past_the_line_says_so(self, api, client, tmp_path):
+		"""The real refusal blames the state, not the file, when the project was already over; the preview must not contradict it."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 60)
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"a.md": "refused_full"}
+		detail = results[0].detail
+		assert detail is not None
+		assert "already past" in detail
+
+	def test_a_dry_run_estimates_at_the_rate_the_project_shows(self, api, client, tmp_path):
+		"""The fake counts one token per character; a project holding such a document teaches the preview that rate, and a file it would refuse at that rate is refused."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "b.md").write_text("b" * 60, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"b.md": "refused_full"}
+
+	def test_a_dry_run_measures_a_listing_that_hides_text_by_fetching_a_sample(self, stub_api, stub_client, tmp_path):
+		"""A listing with token counts but no text can still teach the rate: a few documents are fetched whole, since knowing before writing is the whole point of a dry run."""
+		stub_api.projects[PROJECT]["_search_threshold"] = 50
+		stub_api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "b.md").write_text("b" * 60, encoding="utf-8")
+
+		results = push(stub_client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"b.md": "refused_full"}
+
+	def test_a_dry_run_whose_sample_fetch_fails_falls_back_to_the_default_rate(self, stub_api, stub_client, tmp_path):
+		"""A document that cannot be fetched teaches nothing, and the preview is not worth failing the whole dry run over."""
+		stub_api.projects[PROJECT]["_search_threshold"] = 50
+		stub_api.add_document(PROJECT, "seed.md", "s" * 10)
+		stub_api.fail_once("GET", "/docs/[^/]+$", NotFoundError("gone"))
+		(tmp_path / "b.md").write_text("b" * 60, encoding="utf-8")
+
+		results = push(stub_client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"b.md": "created"}
+
+	def test_a_dry_run_over_an_uncounted_listing_says_the_stop_cannot_be_previewed(self, api, client, tmp_path):
+		"""When the API reports no token counts, the real gate admits every write unchecked, so a preview that refused on a guess would contradict it."""
+		api.list_includes_token_counts = False
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "b.md").write_text("b" * 200, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"b.md": "created"}
+		detail = results[0].detail
+		assert detail is not None
+		assert "not previewed" in detail
+		assert "token count" in detail
+
+	def test_a_dry_run_into_an_empty_project_estimates_at_a_default_rate(self, api, client, tmp_path):
+		"""With no document to measure, the preview falls back to a rate well under one token per character, and says so."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+		(tmp_path / "b.md").write_text("b" * 60, encoding="utf-8")
+		(tmp_path / "c.md").write_text("c" * 600, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"b.md": "created", "c.md": "refused_full"}
+		assert "no document" in {result.file_name: result.detail for result in results}["c.md"]
+
+	def test_a_dry_run_over_an_empty_folder_fetches_nothing_but_the_listing(self, api, client, tmp_path):
+		"""With no file to preview there is nothing to project, so the stats and any calibration fetch are not worth a request."""
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert results == []
+		assert all("kb/stats" not in path for _, path in api.log)
+
+	def test_a_dry_run_does_not_fetch_a_document_whose_empty_text_is_already_listed(self, api, client, tmp_path):
+		"""Empty text is text the listing already gave; fetching the document whole would only learn the same nothing."""
+		api.add_document(PROJECT, "empty.md", "")
+		(tmp_path / "b.md").write_text("b" * 60, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"b.md": "created"}
+		document_fetches = [path for _, path in api.log if path.rsplit("/", 1)[0].endswith("/docs")]
+		assert document_fetches == []
+
+	def test_a_dry_run_without_knowledge_stats_still_previews(self, api, client, tmp_path):
+		"""A project whose stats endpoint is missing still gets its rows, each saying the stop was not previewed rather than passing as one that fits."""
+		api.projects[PROJECT]["_search_threshold"] = None
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"a.md": "created"}
+		detail = results[0].detail
+		assert detail is not None
+		assert "dry run" in detail
+		assert "not previewed" in detail
 
 	def test_push_with_allow_search_mode_succeeds(self, api, client, tmp_path):
 		api.projects[PROJECT]["_search_threshold"] = 50

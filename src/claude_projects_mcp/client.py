@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .capacity import Verdict, candidates, judge, refusal
+from .capacity import Verdict, admits, candidates, judge, line_of, refusal, tokens_of
 from .errors import AmbiguousDocError, ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, KnowledgeFullError, NotFoundError, RateLimitedError
 from .identifiers import chat_project_id
 from .models import Document, KnowledgeStats, Organization, Project, ScheduledTask, UploadedFile
@@ -593,11 +593,12 @@ class ClaudeProjectsClient:
 
 		return deleted, failed
 
-	def _try_knowledge_stats(self, project_id: str) -> KnowledgeStats | None:
+	def try_knowledge_stats(self, project_id: str) -> tuple[KnowledgeStats | None, ClaudeProjectsError | None]:
+		"""The project's knowledge stats, or None with the failure, for callers that carry on without a capacity check and say why rather than fail."""
 		try:
-			return self.knowledge_stats(project_id)
-		except ClaudeProjectsError:
-			return None
+			return self.knowledge_stats(project_id), None
+		except ClaudeProjectsError as exception:
+			return None, exception
 
 	def save_document(
 		self,
@@ -611,7 +612,7 @@ class ClaudeProjectsClient:
 		"""The single gated write primitive: backup replacing[0] if any, create, measure, keep or revert."""
 		backup_path = self._backup_before_save(project_id, file_name, replacing, backup)
 		created = self.create_document(project_id, file_name, content)
-		stats = self._try_knowledge_stats(project_id)
+		stats, _ = self.try_knowledge_stats(project_id)
 
 		if stats is None or created.estimated_token_count is None:
 			replaced, failed = self._delete_documents(project_id, replacing)
@@ -625,11 +626,11 @@ class ClaudeProjectsClient:
 			)
 
 		added = created.estimated_token_count
-		removed = sum(document.estimated_token_count for document in replacing if document.estimated_token_count is not None)
+		removed = tokens_of(replacing)
 		verdict = judge(stats, added, removed)
 
 		context = _SaveContext(project_id, file_name, created, stats, backup_path)
-		if verdict == "fits" or (verdict == "search_mode" and allow_search_mode):
+		if admits(verdict, allow_search_mode):
 			return self._admit_save(context, replacing, allow_search_mode, verdict)
 
 		return self._rollback_or_raise(context, added, removed, verdict)
@@ -642,7 +643,7 @@ class ClaudeProjectsClient:
 		verdict: Verdict,
 	) -> ReplaceResult:
 		replaced, failed = self._delete_documents(context.project_id, replacing)
-		actually_removed = sum(document.estimated_token_count for document in replacing if document.uuid in replaced and document.estimated_token_count is not None)
+		actually_removed = tokens_of([document for document in replacing if document.uuid in replaced])
 		final_size = context.stats.size - actually_removed
 		projected_stats = KnowledgeStats(
 			size=final_size,
@@ -699,11 +700,7 @@ class ClaudeProjectsClient:
 		existing_documents = self.list_documents(context.project_id)
 		candidates_list = candidates(existing_documents, excluding=context.file_name)
 		projected = context.stats.size - removed
-
-		if verdict == "over_max":
-			limit_value = context.stats.max_size
-		else:
-			limit_value = context.stats.search_threshold
+		_, limit_value = line_of(context.stats, verdict)
 
 		message = refusal(context.file_name, verdict, context.stats, projected, added, candidates_list)
 		raise KnowledgeFullError(message, file_name=context.file_name, verdict=verdict, projected=projected, limit=limit_value)

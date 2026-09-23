@@ -16,6 +16,10 @@ class UnsafePathError(ClaudeProjectsError):
 	"""A document name would have escaped the directory it was meant to be written into."""
 
 
+class InvalidPatternError(ClaudeProjectsError):
+	"""A push pattern that cannot be matched against the files in one folder: a path rather than a file name pattern, or nothing usable at all."""
+
+
 class BackupError(ClaudeProjectsError):
 	"""Could not preserve content that is about to be replaced or deleted.
 

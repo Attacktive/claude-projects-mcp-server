@@ -529,10 +529,11 @@ def _register_pull_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 		}
 
 
-def _first_refused_warning(results: list[FileResult]) -> str | None:
+def _push_warning(results: list[FileResult]) -> str | None:
+	"""What the model must relay about a push: where it stopped, or that a dry run could not say where it would."""
 	for result in results:
-		if result.status in ("refused_full", "written_over_capacity") and result.detail:
-			return result.detail
+		if result.warning is not None:
+			return result.warning
 
 	return None
 
@@ -540,7 +541,7 @@ def _first_refused_warning(results: list[FileResult]) -> str | None:
 def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Upload a local folder's text files into the project. Unchanged files are skipped, differing ones need overwrite=true, and remote documents missing locally are never deleted; the project's uploaded files are untouched and cannot be pushed. Use dry_run=true to preview. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
+		description="Upload a local folder's text files into the project. Unchanged files are skipped, differing ones need overwrite=true, and remote documents missing locally are never deleted; the project's uploaded files are untouched and cannot be pushed. Use dry_run=true to preview, including where the push would stop; that stop is an estimate, since a preview writes nothing to measure. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
 	)
 	def push_documents(
 		project_id: str,
@@ -576,7 +577,7 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 				"results": [_result_dict(result) for result in results],
 				"summary": summarise(results),
 			},
-			_first_refused_warning(results),
+			_push_warning(results),
 		)
 
 

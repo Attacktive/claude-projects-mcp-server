@@ -643,6 +643,38 @@ class TestPushDocs:
 
 		assert "nope" in str(exception_info.value)
 
+	@pytest.mark.parametrize("pattern", ["", ".", "/somewhere/*.md", "**/*.md"])
+	async def test_a_bad_pattern_is_a_tool_error_naming_it(self, server, tmp_path, pattern):
+		"""The model chose the pattern, so the answer has to be one it can act on rather than an internal error."""
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), pattern=pattern)
+
+		assert repr(pattern) in str(exception_info.value)
+
+	async def test_a_dry_run_without_stats_lifts_the_caveat_into_warning(self, api, server, tmp_path):
+		"""Every row says the stop was not previewed, but the model is told to relay `warning`, so the caveat has to be there too."""
+		api.projects[PROJECT]["_search_threshold"] = None
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), dry_run=True)
+
+		assert result["summary"] == {"created": 1}
+		assert "not previewed" in result["warning"]
+
+	async def test_a_dry_run_lifts_the_projected_refusal_into_warning(self, api, server, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+		(tmp_path / "b.md").write_text("b" * 100, encoding="utf-8")
+
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), dry_run=True)
+
+		assert result["summary"] == {"created": 1, "refused_full": 1}
+		assert "dry run" in result["warning"]
+		assert api.document_names(PROJECT) == ["seed.md"]
+
 	async def test_push_documents_lifts_refusal_into_warning(self, api, server, tmp_path):
 		api.projects[PROJECT]["_search_threshold"] = 50
 		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")

@@ -11,7 +11,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 465 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All seventeen tools are implemented and covered by 497 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
 Files uploaded through the web UI, such as PDFs, are listed, pulled, and backed up before a deletion, but that path is built against a captured response shape and has not yet been run against a real upload (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 

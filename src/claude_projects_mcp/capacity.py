@@ -10,6 +10,8 @@ from .models import Document, KnowledgeStats
 
 Verdict = Literal["fits", "search_mode", "over_max"]
 
+_SEARCH_MODE_HINT = "To accept search mode instead, pass allow_search_mode=true."
+
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
@@ -35,6 +37,62 @@ def judge(stats: KnowledgeStats, added: int, removed: int) -> Verdict:
 	return "fits"
 
 
+def line_of(stats: KnowledgeStats, verdict: Verdict) -> tuple[str, int]:
+	"""The line a verdict is about, as the name a message calls it and its value in tokens."""
+	if verdict == "over_max":
+		return "its maximum", stats.max_size
+
+	return "its search threshold", stats.search_threshold
+
+
+def crossing(file_name: str, verdict: Verdict, stats: KnowledgeStats, projected: int, added: int) -> str:
+	"""The sentence saying a write would cross the line, or that the project was already past it and the write would add more.
+
+	`stats.size` is the size as measured after the write, which is how the gate sees it; the size before is recovered from `added`.
+	"""
+	line_name, limit = line_of(stats, verdict)
+	previous_size = stats.size - added
+	if previous_size > limit:
+		return f"The project is already past {line_name} ({previous_size:,} of {limit:,} tokens), and writing {file_name!r} would add {added:,} more."
+
+	return f"Writing {file_name!r} ({added:,} tokens) would push the project past {line_name}: {projected:,} of {limit:,} tokens, {projected - limit:,} over."
+
+
+def admits(verdict: Verdict, allow_search_mode: bool) -> bool:
+	"""Whether a write with this verdict goes through: anything that fits, and search mode when the caller accepts it."""
+	return verdict == "fits" or (verdict == "search_mode" and allow_search_mode)
+
+
+def tokens_of(documents: list[Document]) -> int:
+	"""These documents' token counts added up, skipping any the listing gave none for."""
+	return sum(document.estimated_token_count for document in documents if document.estimated_token_count is not None)
+
+
+def by_name(documents: list[Document]) -> dict[str, list[Document]]:
+	"""The documents grouped under their file names, in the order given; more than one under a name is an interrupted save."""
+	grouped: dict[str, list[Document]] = {}
+	for document in documents:
+		grouped.setdefault(document.file_name, []).append(document)
+
+	return grouped
+
+
+def consequence(verdict: Verdict) -> str:
+	"""What lies past the line a verdict names."""
+	if verdict == "over_max":
+		return "Past that line the web UI refuses to add anything to the project knowledge until something is removed."
+
+	return "Past that line Claude in the web UI retrieves from the project knowledge instead of reading all of it, so a document can go unseen."
+
+
+def hint(verdict: Verdict) -> list[str]:
+	"""The way past a refusal, as zero or one sentence: search mode can be accepted, the maximum cannot."""
+	if verdict == "over_max":
+		return []
+
+	return [_SEARCH_MODE_HINT]
+
+
 def candidates(documents: list[Document], excluding: str) -> list[Candidate]:
 	"""Return up to three documents most worth compacting, excluding the file name being written.
 
@@ -42,12 +100,8 @@ def candidates(documents: list[Document], excluding: str) -> list[Candidate]:
 	then by estimated_token_count descending (default 0 if None),
 	older created_at first on ties (default empty string if None).
 	"""
-	by_name: dict[str, list[Document]] = {}
-	for document in documents:
-		by_name.setdefault(document.file_name, []).append(document)
-
 	all_candidates: list[Candidate] = []
-	for file_name, copies in by_name.items():
+	for file_name, copies in by_name(documents).items():
 		if file_name == excluding:
 			continue
 
@@ -95,39 +149,19 @@ def refusal(
 	candidates_list: list[Candidate],
 ) -> str:
 	"""Format the refusal message for the model when a write exceeds search threshold or maximum size."""
-	is_maximum = verdict == "over_max"
-	if is_maximum:
-		line_name = "its maximum"
-		limit_value = stats.max_size
-	else:
-		line_name = "its search threshold"
-		limit_value = stats.search_threshold
-
-	over_amount = projected - limit_value
-	previous_size = stats.size - added
-	was_already_past = previous_size > limit_value
-
-	if was_already_past:
-		first_sentence = f"The project is already past {line_name} ({previous_size:,} of {limit_value:,} tokens), and writing {file_name!r} would add {added:,} more."
-	else:
-		first_sentence = f"Writing {file_name!r} ({added:,} tokens) would push the project past {line_name}: {projected:,} of {limit_value:,} tokens, {over_amount:,} over."
-
-	if is_maximum:
-		second_sentence = "Past that line the web UI refuses to add anything to the project knowledge until something is removed."
-	else:
-		second_sentence = "Past that line Claude in the web UI retrieves from the project knowledge instead of reading all of it, so a document can go unseen."
-
-	third_sentence = "The write was undone; nothing changed."
-
 	if not candidates_list:
 		candidates_sentence = "There is nothing else in the project to compact; shrink this content."
 	else:
 		formatted_candidates = [_format_candidate(candidate) for candidate in candidates_list]
 		candidates_sentence = f"To make room, shrink this content, or compact one of these with write_document overwrite=true: {'; '.join(formatted_candidates)}."
 
-	parts = [first_sentence, second_sentence, third_sentence, candidates_sentence]
-	if not is_maximum:
-		parts.append("To accept search mode instead, pass allow_search_mode=true.")
+	parts = [
+		crossing(file_name, verdict, stats, projected, added),
+		consequence(verdict),
+		"The write was undone; nothing changed.",
+		candidates_sentence,
+		*hint(verdict),
+	]
 
 	return " ".join(parts)
 

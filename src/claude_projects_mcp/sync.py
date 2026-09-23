@@ -8,20 +8,31 @@ Both directions are deliberately conservative.
 Neither deletes anything the other side is missing, and neither overwrites differing content without being asked.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cache
-from pathlib import Path
+from pathlib import Path, PurePath
+from typing import Self
 
+from .capacity import Verdict, admits, by_name, consequence, crossing, hint, judge, tokens_of
 from .client import ClaudeProjectsClient
-from .errors import ClaudeProjectsError, KnowledgeFullError
+from .errors import ClaudeProjectsError, InvalidPatternError, KnowledgeFullError
 from .filenames import deduplicate, safe_child, sanitize
-from .models import Document, UploadedFile
+from .models import Document, KnowledgeStats, UploadedFile
 
 # Stands in for every upload in a pull's results when the files listing itself could not be fetched.
 UPLOADS_PLACEHOLDER = "(uploaded files)"
 
 _LOCAL_DIFFERS = "local file differs; pass overwrite_local to take the remote version"
+
+# What a dry run assumes a character costs when the project holds no document to measure against.
+# Observed once, on 2026-09-18: a Korean-and-English markdown document of 139,773 characters that the API counted as 42,660 tokens, so 0.305 tokens per character.
+# One observation is a fallback, not a fact about every project, which is why any project holding a measured document is calibrated from that instead.
+_FALLBACK_TOKENS_PER_CHARACTER = 0.3
+
+# How many documents a dry run fetches whole to learn that rate when the listing carries token counts but no text.
+_CALIBRATION_SAMPLE = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +44,8 @@ class FileResult:
 	backup_path: str | None = None
 	# "document" for a text document, "upload" for a file uploaded through the web UI, which comes down as bytes.
 	kind: str = "document"
+	# What the model must be told about this row, which the server lifts into the result's top-level warning; not part of the row as serialized.
+	warning: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +210,133 @@ def _pull_one(
 		return FileResult(document.file_name, "error", detail=str(exception))
 
 
+@dataclass(frozen=True, slots=True)
+class _PushContext:
+	"""What every file in one push shares."""
+
+	client: ClaudeProjectsClient
+	project_id: str
+	# Resolved, so a file that resolves elsewhere can be told from one that merely spells the folder differently.
+	source: Path
+	# Every remote copy of each name, newest first; more than one copy is an interrupted save that the next replacement of that name cleans up.
+	remote: dict[str, list[Document]]
+	options: PushOptions
+	# Present on a dry run only.
+	preview: _Preview | None
+
+
+@dataclass(slots=True)
+class _Preview:
+	"""A dry run's stand-in for the capacity gate inside `client.save_document`.
+
+	The real gate writes, measures, and rolls back.
+	A preview writes nothing, so it carries the project's size forward from file to file and estimates each file's tokens from its characters, at the rate the project's own documents show.
+	"""
+
+	# Why the stop cannot be projected; when set, every row says so and nothing else here is consulted.
+	unavailable: str | None
+	# None only when `unavailable` says the stats could not be fetched.
+	stats: KnowledgeStats | None
+	# None when no document offers both its text and a token count, in which case the fallback rate applies.
+	tokens_per_character: float | None
+	allow_search_mode: bool
+	size: int = 0
+
+	@classmethod
+	def of(cls, client: ClaudeProjectsClient, project_id: str, documents: list[Document], options: PushOptions) -> Self | None:
+		if not options.dry_run:
+			return None
+
+		stats, failure = client.try_knowledge_stats(project_id)
+		if stats is None:
+			return cls(f"the project's knowledge stats could not be fetched: {failure}", None, None, options.allow_search_mode)
+
+		# A listing that counts nothing means the API is not reporting token counts, and the real gate admits a write it cannot measure rather than refuse it.
+		if documents and all(document.estimated_token_count is None for document in documents):
+			return cls("no listed document carries a token count, so what a write would add cannot be estimated; the real push skips its capacity check when the API reports no count either", stats, None, options.allow_search_mode, stats.size)
+
+		return cls(None, stats, _tokens_per_character(_measured(client, project_id, documents)), options.allow_search_mode, stats.size)
+
+	def result(self, name: str, path: Path, status: str, content: str, replacing: list[Document]) -> FileResult:
+		"""The row the real push would produce for this file, or the refusal it would stop at."""
+		if self.unavailable is not None:
+			note = f"dry run; where the push would stop was not previewed: {self.unavailable}"
+			return FileResult(name, status, local_path=str(path), detail=note, warning=note)
+
+		added = math.ceil(len(content) * self._rate())
+		removed = tokens_of(replacing)
+
+		# `judge` reads the size as measured after the create, which is how the real gate sees it.
+		after_create = replace(self.stats, size=self.size + added)
+		verdict = judge(after_create, added, removed)
+		if admits(verdict, self.allow_search_mode):
+			self.size = after_create.size - removed
+			return FileResult(name, status, local_path=str(path), detail="dry run")
+
+		message = self._refusal(name, verdict, after_create, added, removed)
+		return FileResult(name, "refused_full", local_path=str(path), detail=message, warning=message)
+
+	def _rate(self) -> float:
+		if self.tokens_per_character is None:
+			return _FALLBACK_TOKENS_PER_CHARACTER
+
+		return self.tokens_per_character
+
+	def _basis(self) -> str:
+		if self.tokens_per_character is None:
+			return f"at {_FALLBACK_TOKENS_PER_CHARACTER} tokens per character, the default when no document offers both its text and a token count to measure from"
+
+		return f"at the {self.tokens_per_character:.2f} tokens per character this project's documents average"
+
+	def _refusal(self, name: str, verdict: Verdict, after_create: KnowledgeStats, added: int, removed: int) -> str:
+		sentences = [
+			crossing(name, verdict, after_create, after_create.size - removed, added),
+			consequence(verdict),
+			f"That figure is estimated {self._basis()}, since a dry run writes nothing to measure.",
+			"The real push would stop here and write nothing more.",
+			*hint(verdict),
+		]
+
+		return " ".join(sentences)
+
+
+def _measured(client: ClaudeProjectsClient, project_id: str, documents: list[Document]) -> list[Document]:
+	"""The documents that offer both their text and a token count, fetching a few whole when the listing counts them but hides their text.
+
+	The API is free to stop including text in listings, and a dry run exists to know before writing, so a handful of fetches is a fair price for the rate.
+	"""
+	counted = [document for document in documents if document.estimated_token_count is not None]
+	measured = [document for document in counted if document.content is not None]
+	if measured:
+		return measured
+
+	return _sampled(client, project_id, counted[:_CALIBRATION_SAMPLE])
+
+
+def _sampled(client: ClaudeProjectsClient, project_id: str, documents: list[Document]) -> list[Document]:
+	"""These documents fetched whole, keeping the ones that came back with both text and a count.
+
+	One that cannot be fetched teaches nothing and is skipped; the rate falls back if none can be.
+	"""
+	sampled = []
+	for document in documents:
+		try:
+			sampled.append(client.get_document(project_id, document.uuid))
+		except ClaudeProjectsError:
+			continue
+
+	return [document for document in sampled if document.content and document.estimated_token_count is not None]
+
+
+def _tokens_per_character(measured: list[Document]) -> float | None:
+	"""The rate these documents show, or None when there is nothing to measure."""
+	characters = sum(len(document.content or "") for document in measured)
+	if characters == 0:
+		return None
+
+	return tokens_of(measured) / characters
+
+
 def push(
 	client: ClaudeProjectsClient,
 	project_id: str,
@@ -208,7 +348,9 @@ def push(
 	"""Upload `source_directory`'s files into the project.
 
 	Never deletes remote documents that are missing locally: a partial folder must not prune a shared project.
-	Files are matched non-recursively, because a project's documents are a flat list and recursing would collide names.
+	Matches only the files directly inside the folder, and refuses a pattern that reaches elsewhere, because a project's documents are a flat list and recursing would collide names.
+	A file that resolves outside the folder, such as a symbolic link to somewhere else on disk, is reported rather than uploaded.
+	A dry run previews where the real push would stop, from estimated token counts, since it writes nothing to measure.
 	"""
 	source = Path(source_directory)
 	if not source.is_dir():
@@ -217,29 +359,67 @@ def push(
 	if options is None:
 		options = PushOptions()
 
-	remote = _index_by_name(client.list_documents(project_id))
+	matching_paths = _matching_files(source, pattern)
+	documents = client.list_documents(project_id)
+	preview = None
+	if matching_paths:
+		preview = _Preview.of(client, project_id, documents, options)
 
-	matching_paths = [path for path in sorted(source.glob(pattern)) if path.is_file()]
+	context = _PushContext(client, project_id, source.resolve(), by_name(documents), options, preview)
+
+	return _push_all(context, matching_paths)
+
+
+def _matching_files(source: Path, pattern: str) -> list[Path]:
+	"""The files in `source` itself that match `pattern`, in name order.
+
+	A project's documents are a flat list, so a pattern that would reach into other directories is refused rather than honored: two same-named files at different depths would land as duplicates of one name, which is the state `list_documents` flags as an interrupted save.
+	The check is on the pattern's structure rather than on what it happens to match, so the same pattern gets the same answer whatever the folder holds.
+	"""
+	pure = PurePath(pattern)
+	if not pure.parts:
+		raise InvalidPatternError(f"pattern {pattern!r} names nothing; pass a file name pattern such as '*.md'.")
+
+	if pure.anchor or len(pure.parts) > 1 or pure.parts[0] in ("..", "**"):
+		raise InvalidPatternError(f"pattern {pattern!r} is a path, not a file name pattern. A project's documents are a flat list, so push_documents matches only the files directly inside source_directory; pass something like '*.md'.")
+
+	return [path for path in sorted(source.glob(pattern)) if path.is_file()]
+
+
+def _push_all(context: _PushContext, paths: list[Path]) -> list[FileResult]:
+	if context.preview is None:
+		not_attempted = "not attempted: the project has no room"
+	else:
+		not_attempted = "not attempted: the preview stopped at an earlier file"
+
 	results = []
-	for index, path in enumerate(matching_paths):
-		result = _push_one(client, project_id, path, remote, options)
+	for index, path in enumerate(paths):
+		result = _escape_of(context, path)
+		if result is None:
+			result = _push_one(context, path)
+
 		results.append(result)
 		if result.status in ("refused_full", "written_over_capacity"):
-			for remaining in matching_paths[index + 1 :]:
-				results.append(FileResult(remaining.name, "skipped_full", local_path=str(remaining), detail="not attempted: the project has no room"))
+			for remaining in paths[index + 1 :]:
+				results.append(FileResult(remaining.name, "skipped_full", local_path=str(remaining), detail=not_attempted))
 
 			break
 
 	return results
 
 
-def _push_one(
-	client: ClaudeProjectsClient,
-	project_id: str,
-	path: Path,
-	remote: dict[str, Document],
-	options: PushOptions,
-) -> FileResult:
+def _escape_of(context: _PushContext, path: Path) -> FileResult | None:
+	"""An error row for a file that resolves outside the source folder, such as a symbolic link to elsewhere on disk, or None for one that stays inside.
+
+	The read-side twin of `safe_child`, which keeps the pull side's writes inside their folder the same way.
+	"""
+	if path.resolve().is_relative_to(context.source):
+		return None
+
+	return FileResult(path.name, "error", local_path=str(path), detail=f"resolves to somewhere outside the source folder {context.source}; only files inside it are uploaded")
+
+
+def _push_one(context: _PushContext, path: Path) -> FileResult:
 	name = path.name
 	try:
 		content = path.read_text(encoding="utf-8")
@@ -249,50 +429,39 @@ def _push_one(
 		return FileResult(name, "error", local_path=str(path), detail=str(exception))
 
 	try:
-		existing = remote.get(name)
+		copies = context.remote.get(name, [])
+		if not copies:
+			return _push_new(context, path, name, content)
 
-		if existing is None:
-			return _push_new(client, project_id, path, name, content, options)
-
-		return _push_existing(client, project_id, path, name, content, existing, options)
+		return _push_existing(context, path, name, content, copies)
 	except KnowledgeFullError as exception:
-		return FileResult(name, "refused_full", local_path=str(path), detail=str(exception))
+		return FileResult(name, "refused_full", local_path=str(path), detail=str(exception), warning=str(exception))
 	except (ClaudeProjectsError, OSError) as exception:
 		return FileResult(name, "error", local_path=str(path), detail=str(exception))
 
 
-def _push_new(client: ClaudeProjectsClient, project_id: str, path: Path, name: str, content: str, options: PushOptions) -> FileResult:
-	if options.dry_run:
-		return FileResult(name, "created", local_path=str(path), detail="dry run")
+def _push_new(context: _PushContext, path: Path, name: str, content: str) -> FileResult:
+	if context.preview is not None:
+		return context.preview.result(name, path, "created", content, [])
 
-	result = client.save_document(project_id, name, content, replacing=[], allow_search_mode=options.allow_search_mode)
+	result = context.client.save_document(context.project_id, name, content, replacing=[], allow_search_mode=context.options.allow_search_mode)
 	if result.rollback_failed:
-		return FileResult(
-			name,
-			"written_over_capacity",
-			local_path=str(path),
-			detail=f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed.",
-		)
+		detail = f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed."
+		return FileResult(name, "written_over_capacity", local_path=str(path), detail=detail, warning=detail)
 
 	return FileResult(name, "created", local_path=str(path))
 
 
-def _push_existing(
-	client: ClaudeProjectsClient,
-	project_id: str,
-	path: Path,
-	name: str,
-	content: str,
-	existing: Document,
-	options: PushOptions,
-) -> FileResult:
+def _push_existing(context: _PushContext, path: Path, name: str, content: str, copies: list[Document]) -> FileResult:
+	"""Compare against the newest copy; a replacement takes every copy with it, which is what the preview has to count."""
+	existing = copies[0]
 	if existing.is_stub:
-		existing = client.get_document(project_id, existing.uuid)
+		existing = context.client.get_document(context.project_id, existing.uuid)
 
 	if existing.content == content:
 		return FileResult(name, "unchanged", local_path=str(path))
 
-	if not options.overwrite:
+	if not context.options.overwrite:
 		return FileResult(
 			name,
 			"skipped_exists",
@@ -300,30 +469,16 @@ def _push_existing(
 			detail="remote document differs; pass overwrite to replace it",
 		)
 
-	if options.dry_run:
-		return FileResult(name, "replaced", local_path=str(path), detail="dry run")
+	if context.preview is not None:
+		return context.preview.result(name, path, "replaced", content, copies)
 
-	result = client.replace_document(project_id, name, content, allow_search_mode=options.allow_search_mode, backup=options.backup)
+	result = context.client.replace_document(context.project_id, name, content, allow_search_mode=context.options.allow_search_mode, backup=context.options.backup)
 	if result.rollback_failed:
-		return FileResult(
-			name,
-			"written_over_capacity",
-			local_path=str(path),
-			detail=f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed. The previous document {existing.uuid} was left in place.",
-			backup_path=result.backup_path,
-		)
+		detail = f"write took the project past capacity and could not be undone: deleting new document {result.uuid} failed. The previous document {existing.uuid} was left in place."
+		return FileResult(name, "written_over_capacity", local_path=str(path), detail=detail, backup_path=result.backup_path, warning=detail)
 
 	detail = None
 	if result.failed_delete_uuids:
 		detail = f"saved, but {len(result.failed_delete_uuids)} old copy could not be removed and remains as a duplicate"
 
 	return FileResult(name, "replaced", local_path=str(path), detail=detail, backup_path=result.backup_path)
-
-
-def _index_by_name(documents: list[Document]) -> dict[str, Document]:
-	"""Newest wins, since `list_documents` is already newest-first."""
-	index: dict[str, Document] = {}
-	for document in documents:
-		index.setdefault(document.file_name, document)
-
-	return index

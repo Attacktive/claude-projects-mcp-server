@@ -186,7 +186,7 @@ def test_refusal_names_the_upload_that_fills_the_project():
 		uploads=[UploadedFile(uuid="u1", file_name="handbook.pdf", size_bytes=1_054_702, page_count=12)],
 	)
 
-	assert "There is no other document to compact; shrink this content. The project also holds an uploaded file, which counts toward its size but can be removed only in the web UI: 'handbook.pdf' (1,054,702 bytes, 12 pages). To accept search mode instead" in message
+	assert "There is no other document to compact; shrink this content. The files listing shows an uploaded file, which counts toward the project's size but can be removed only in the web UI: 'handbook.pdf' (1,054,702 bytes, 12 pages). To accept search mode instead" in message
 
 
 def test_refusal_names_uploads_largest_first_and_one_without_a_size_last():
@@ -207,7 +207,7 @@ def test_refusal_names_uploads_largest_first_and_one_without_a_size_last():
 		uploads=uploads,
 	)
 
-	assert "The project also holds 3 uploaded files, which count toward its size but can be removed only in the web UI: 'handbook.pdf' (1,054,702 bytes, 12 pages); 'brief.pdf' (90,000 bytes, 1 page); 'photo.png' (size not listed)." in message
+	assert "The files listing shows 3 uploaded files, which count toward the project's size but can be removed only in the web UI: 'handbook.pdf' (1,054,702 bytes, 12 pages); 'brief.pdf' (90,000 bytes, 1 page); 'photo.png' (size not listed)." in message
 
 
 def test_refusal_names_only_the_three_largest_of_many_uploads():
@@ -224,7 +224,7 @@ def test_refusal_names_only_the_three_largest_of_many_uploads():
 		uploads=uploads,
 	)
 
-	assert "The project also holds 5 uploaded files, which count toward its size but can be removed only in the web UI; the largest are '1054702.pdf' (1,054,702 bytes); '413287.pdf' (413,287 bytes); '90000.pdf' (90,000 bytes)." in message
+	assert "The files listing shows 5 uploaded files, which count toward the project's size but can be removed only in the web UI; the largest listed are '1054702.pdf' (1,054,702 bytes); '413287.pdf' (413,287 bytes); '90000.pdf' (90,000 bytes)." in message
 
 
 def test_refusal_says_when_the_uploads_could_not_be_listed():

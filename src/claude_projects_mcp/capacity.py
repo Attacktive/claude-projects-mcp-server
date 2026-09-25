@@ -109,6 +109,7 @@ def uploads_note(uploads: list[UploadedFile] | None) -> list[str]:
 	"""The uploads taking up room that no write from here can free, as zero or one sentence, with `None` meaning the files listing could not be fetched.
 
 	They are named apart from the compaction candidates because only the web UI can remove one, and ranked by bytes because the files listing reports no token count for them.
+	The sentence speaks of what the listing shows rather than what the project holds, because whether that listing truncates is unknown.
 	"""
 	if uploads is None:
 		return ["The project's uploaded files could not be listed, so any that take up room are not named here."]
@@ -119,12 +120,12 @@ def uploads_note(uploads: list[UploadedFile] | None) -> list[str]:
 	largest = sorted(uploads, key=lambda upload: upload.size_bytes if upload.size_bytes is not None else -1, reverse=True)
 	named = "; ".join(_format_upload(upload) for upload in largest[:_UPLOADS_NAMED])
 	if len(uploads) == 1:
-		return [f"The project also holds an uploaded file, which counts toward its size but can be removed only in the web UI: {named}."]
+		return [f"The files listing shows an uploaded file, which counts toward the project's size but can be removed only in the web UI: {named}."]
 
 	if len(uploads) <= _UPLOADS_NAMED:
-		return [f"The project also holds {len(uploads)} uploaded files, which count toward its size but can be removed only in the web UI: {named}."]
+		return [f"The files listing shows {len(uploads)} uploaded files, which count toward the project's size but can be removed only in the web UI: {named}."]
 
-	return [f"The project also holds {len(uploads)} uploaded files, which count toward its size but can be removed only in the web UI; the largest are {named}."]
+	return [f"The files listing shows {len(uploads)} uploaded files, which count toward the project's size but can be removed only in the web UI; the largest listed are {named}."]
 
 
 def candidates(documents: list[Document], excluding: str) -> list[Candidate]:

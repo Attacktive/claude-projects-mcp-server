@@ -469,7 +469,7 @@ class TestWriteDoc:
 
 		message = str(exception_info.value)
 		assert "Writing 'new.md' (10 tokens) would push the project past its search threshold: 105 of 100 tokens, 5 over." in message
-		assert "There is no other document to compact; shrink this content. The project also holds an uploaded file, which counts toward its size but can be removed only in the web UI: 'handbook.pdf' (1,000 bytes, 12 pages)." in message
+		assert "There is no other document to compact; shrink this content. The files listing shows an uploaded file, which counts toward the project's size but can be removed only in the web UI: 'handbook.pdf' (1,000 bytes, 12 pages)." in message
 		assert api.content_of(PROJECT, "new.md") == []
 
 	async def test_a_refusal_says_when_the_uploads_could_not_be_listed(self, api, server):

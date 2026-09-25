@@ -45,7 +45,8 @@ A project's knowledge has two lines, both reported by list_documents: a search t
 which Claude in the web UI retrieves from the knowledge instead of reading all of it, and a
 maximum, past which the web UI refuses uploads.
 The API enforces neither, so write_document and push_documents do: a write that would grow
-the project past a line is undone and refused, naming the documents most worth compacting.
+the project past a line is undone and refused, naming the documents most worth compacting
+and the largest uploads, which only the web UI can remove.
 allow_search_mode=true accepts the threshold; nothing accepts the maximum.
 
 Scheduled tasks run prompts against a project on a cron schedule. Those schedules are in UTC,
@@ -412,7 +413,7 @@ def _write_capacity_warning(result: ReplaceResult, existing: list[Document]) -> 
 def _register_write_document(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Create a document, or replace one with overwrite=true. The previous content is backed up locally before any replacement. Pass expected_uuid (from read_document) to refuse the write if a teammate has saved since you read it. Refused when the write would grow the project past its search threshold or its maximum, naming the documents most worth compacting; allow_search_mode=true accepts the threshold, never the maximum. Relay any `warning` in the result to the user verbatim — it flags a leftover copy or a file name with no extension.",
+		description="Create a document, or replace one with overwrite=true. The previous content is backed up locally before any replacement. Pass expected_uuid (from read_document) to refuse the write if a teammate has saved since you read it. Refused when the write would grow the project past its search threshold or its maximum, naming the documents most worth compacting and the largest uploaded files, which only the web UI can remove; allow_search_mode=true accepts the threshold, never the maximum. Relay any `warning` in the result to the user verbatim — it flags a leftover copy or a file name with no extension.",
 	)
 	def write_document(
 		project_id: str,

@@ -16,7 +16,7 @@ from functools import cache
 from pathlib import Path, PurePath
 from typing import Self
 
-from .capacity import Verdict, admits, by_name, consequence, crossing, hint, judge, tokens_of
+from .capacity import Verdict, admits, by_name, consequence, crossing, hint, judge, tokens_of, uploads_note
 from .client import ClaudeProjectsClient
 from .errors import ClaudeProjectsError, InvalidPatternError, KnowledgeFullError
 from .filenames import deduplicate, safe_child, sanitize
@@ -242,6 +242,8 @@ class _Preview:
 	tokens_per_character: float | None
 	allow_search_mode: bool
 	size: int = 0
+	# What the files listing held, for the refusal to name; None when it could not be fetched, and unread when `unavailable` is set.
+	uploads: list[UploadedFile] | None = None
 
 	@classmethod
 	def of(cls, client: ClaudeProjectsClient, project_id: str, documents: list[Document], options: PushOptions) -> Self | None:
@@ -256,7 +258,8 @@ class _Preview:
 		if documents and all(document.estimated_token_count is None for document in documents):
 			return cls("no listed document carries a token count, so what a write would add cannot be estimated; the real push skips its capacity check when the API reports no count either", stats, None, options.allow_search_mode, stats.size)
 
-		return cls(None, stats, _tokens_per_character(_measured(client, project_id, documents)), options.allow_search_mode, stats.size)
+		uploads, _ = client.try_list_uploaded_files(project_id)
+		return cls(None, stats, _tokens_per_character(_measured(client, project_id, documents)), options.allow_search_mode, stats.size, uploads)
 
 	def result(self, name: str, path: Path, status: str, content: str, replacing: list[Document]) -> FileResult:
 		"""The row the real push would produce for this file, or the refusal it would stop at."""
@@ -301,6 +304,7 @@ class _Preview:
 			consequence(verdict),
 			estimate,
 			"The real push would stop here and write nothing more.",
+			*uploads_note(self.uploads),
 			*hint(verdict),
 		]
 

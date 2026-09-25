@@ -460,6 +460,30 @@ class TestWriteDoc:
 		assert "The project is already past its maximum (60 of 50 tokens), and writing 'big.md' (45 tokens) would add 5 more, net of the 40 tokens it replaces." in message
 		assert api.content_of(PROJECT, "big.md") == ["b" * 40]
 
+	async def test_a_refusal_names_the_upload_that_fills_the_project(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 100
+		api.add_upload(PROJECT, "handbook.pdf", b"%PDF" + b"x" * 996, page_count=12, token_count=95)
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "write_document", project_id=PROJECT, file_name="new.md", content="c" * 10)
+
+		message = str(exception_info.value)
+		assert "Writing 'new.md' (10 tokens) would push the project past its search threshold: 105 of 100 tokens, 5 over." in message
+		assert "There is no other document to compact; shrink this content. The project also holds an uploaded file, which counts toward its size but can be removed only in the web UI: 'handbook.pdf' (1,000 bytes, 12 pages)." in message
+		assert api.content_of(PROJECT, "new.md") == []
+
+	async def test_a_refusal_says_when_the_uploads_could_not_be_listed(self, api, server):
+		api.projects[PROJECT]["_search_threshold"] = 100
+		api.add_upload(PROJECT, "handbook.pdf", b"%PDF" + b"x" * 996, page_count=12, token_count=95)
+		api.fail_once("GET", r"/files$", ApiError("claude.ai returned HTTP 502.", status=502))
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "write_document", project_id=PROJECT, file_name="new.md", content="c" * 10)
+
+		message = str(exception_info.value)
+		assert "would push the project past its search threshold" in message
+		assert "The project's uploaded files could not be listed, so any that take up room are not named here." in message
+
 	async def test_rollback_delete_fails_reports_done_with_warning(self, api, server):
 		api.projects[PROJECT]["_search_threshold"] = 50
 		existing_uuid = api.add_document(PROJECT, "notes.md", "a" * 40)

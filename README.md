@@ -66,8 +66,6 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
   An upload that is itself an HTML file would be refused the same way, since the download path treats an HTML body as a login page served in place of the file.
 - Whether the files listing truncates is unknown.
   It is a bare array like the documents listing, so it cannot say "that is all of them", and `delete_project` now relies on it before an irreversible delete; a project with many uploads is the case to check.
-- Capacity refusals rank documents only.
-  `capacity.py` cannot name an upload worth removing, so a project that is full because of uploads is told to compact the wrong things, or that there is nothing else to compact; `list_documents` at least shows the uploads with their sizes.
 
 ## Setup
 
@@ -155,7 +153,8 @@ The API enforces neither line on writes, so this server enforces them:
 - A write that would grow the project past a line is undone and refused, naming up to three candidate documents most worth compacting (duplicates first, then by size and age).
 - Passing `allow_search_mode=true` accepts crossing the search threshold (with a warning); nothing accepts exceeding the maximum capacity.
 - `list_documents` reports current knowledge capacity usage under the `knowledge` key, and the uploaded files that count toward it under `uploaded_files`.
-- Uploaded files are never named as compaction candidates, because only the web UI can remove one (see To do).
+- Uploaded files are never compaction candidates, because only the web UI can remove one, so a refusal names up to three of them in a sentence of their own, largest first.
+  The files listing reports no token count for an upload, so they are ranked and described by their bytes.
 
 ## Safety
 

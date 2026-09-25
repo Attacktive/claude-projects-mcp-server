@@ -425,6 +425,19 @@ class TestPush:
 		assert "The new document's 45-token size is estimated at the 1.00 tokens per character this project's documents average" in detail
 		assert "the 40 tokens it replaces come from the project's current document counts" in detail
 
+	def test_a_dry_run_refusal_names_the_upload_that_fills_the_project(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 100
+		api.add_document(PROJECT, "seed.md", "s" * 5)
+		api.add_upload(PROJECT, "handbook.pdf", b"%PDF" + b"x" * 996, page_count=12, token_count=90)
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"a.md": "refused_full"}
+		detail = results[0].detail
+		assert detail is not None
+		assert "The project also holds an uploaded file, which counts toward its size but can be removed only in the web UI: 'handbook.pdf' (1,000 bytes, 12 pages)." in detail
+
 	def test_a_dry_run_estimates_at_the_rate_the_project_shows(self, api, client, tmp_path):
 		"""The fake counts one token per character; a project holding such a document teaches the preview that rate, and a file it would refuse at that rate is refused."""
 		api.projects[PROJECT]["_search_threshold"] = 50

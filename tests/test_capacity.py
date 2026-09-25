@@ -1,7 +1,7 @@
 """Tests for knowledge capacity limits, verdicts, candidate selection, and refusal messages."""
 
 from claude_projects_mcp.capacity import Candidate, candidates, judge, refusal
-from claude_projects_mcp.models import Document, KnowledgeStats
+from claude_projects_mcp.models import Document, KnowledgeStats, UploadedFile
 
 
 def test_judge_fits_when_added_less_than_or_equal_to_removed():
@@ -86,6 +86,7 @@ def test_refusal_crossing_threshold():
 		added=12_400,
 		removed=0,
 		candidates_list=compaction_candidates,
+		uploads=[],
 	)
 
 	expected = (
@@ -112,10 +113,12 @@ def test_refusal_already_past_threshold():
 		added=12_400,
 		removed=0,
 		candidates_list=[],
+		uploads=[],
 	)
 
 	assert message.startswith("The project is already past its search threshold (60,432 of 50,000 tokens), and writing 'notes.md' would add 12,400 more.")
-	assert "There is nothing else in the project to compact; shrink this content." in message
+	assert "There is no other document to compact; shrink this content." in message
+	assert "upload" not in message
 	assert message.endswith("To accept search mode instead, pass allow_search_mode=true.")
 
 
@@ -130,6 +133,7 @@ def test_refusal_already_past_threshold_reports_replacement_net_growth():
 		added=11_000,
 		removed=10_000,
 		candidates_list=[],
+		uploads=[],
 	)
 
 	assert message.startswith("The project is already past its search threshold (51,000 of 50,000 tokens), and writing 'notes.md' (11,000 tokens) would add 1,000 more, net of the 10,000 tokens it replaces.")
@@ -146,6 +150,7 @@ def test_refusal_crossing_threshold_names_replaced_tokens():
 		added=60,
 		removed=40,
 		candidates_list=[],
+		uploads=[],
 	)
 
 	assert message.startswith("Writing 'big.md' (60 tokens, replacing 40 tokens) would push the project past its search threshold: 65 of 50 tokens, 15 over.")
@@ -160,8 +165,78 @@ def test_refusal_crossing_maximum():
 		added=60_000,
 		removed=0,
 		candidates_list=[],
+		uploads=[],
 	)
 
 	assert "would push the project past its maximum" in message
 	assert "Past that line the web UI refuses to add anything to the project knowledge until something is removed." in message
 	assert "allow_search_mode=true" not in message
+
+
+def test_refusal_names_the_upload_that_fills_the_project():
+	# Before write: 72,832 - 12,400 = 60,432, most of it a PDF the documents listing never shows.
+	stats = KnowledgeStats(size=72_832, max_size=2_000_000, search_threshold=50_000, search_mode=True)
+	message = refusal(
+		file_name="notes.md",
+		verdict="search_mode",
+		stats=stats,
+		added=12_400,
+		removed=0,
+		candidates_list=[],
+		uploads=[UploadedFile(uuid="u1", file_name="handbook.pdf", size_bytes=1_054_702, page_count=12)],
+	)
+
+	assert "There is no other document to compact; shrink this content. The project also holds an uploaded file, which counts toward its size but can be removed only in the web UI: 'handbook.pdf' (1,054,702 bytes, 12 pages). To accept search mode instead" in message
+
+
+def test_refusal_names_uploads_largest_first_and_one_without_a_size_last():
+	stats = KnowledgeStats(size=72_832, max_size=2_000_000, search_threshold=50_000, search_mode=True)
+	uploads = [
+		UploadedFile(uuid="u1", file_name="photo.png", file_kind="image"),
+		UploadedFile(uuid="u2", file_name="brief.pdf", size_bytes=90_000, page_count=1),
+		UploadedFile(uuid="u3", file_name="handbook.pdf", size_bytes=1_054_702, page_count=12),
+	]
+
+	message = refusal(
+		file_name="notes.md",
+		verdict="search_mode",
+		stats=stats,
+		added=12_400,
+		removed=0,
+		candidates_list=[],
+		uploads=uploads,
+	)
+
+	assert "The project also holds 3 uploaded files, which count toward its size but can be removed only in the web UI: 'handbook.pdf' (1,054,702 bytes, 12 pages); 'brief.pdf' (90,000 bytes, 1 page); 'photo.png' (size not listed)." in message
+
+
+def test_refusal_names_only_the_three_largest_of_many_uploads():
+	stats = KnowledgeStats(size=72_832, max_size=2_000_000, search_threshold=50_000, search_mode=True)
+	uploads = [UploadedFile(uuid=f"u{size}", file_name=f"{size}.pdf", size_bytes=size) for size in (2_000, 413_287, 90_000, 1_054_702, 5_000)]
+
+	message = refusal(
+		file_name="notes.md",
+		verdict="search_mode",
+		stats=stats,
+		added=12_400,
+		removed=0,
+		candidates_list=[],
+		uploads=uploads,
+	)
+
+	assert "The project also holds 5 uploaded files, which count toward its size but can be removed only in the web UI; the largest are '1054702.pdf' (1,054,702 bytes); '413287.pdf' (413,287 bytes); '90000.pdf' (90,000 bytes)." in message
+
+
+def test_refusal_says_when_the_uploads_could_not_be_listed():
+	stats = KnowledgeStats(size=72_832, max_size=2_000_000, search_threshold=50_000, search_mode=True)
+	message = refusal(
+		file_name="notes.md",
+		verdict="search_mode",
+		stats=stats,
+		added=12_400,
+		removed=0,
+		candidates_list=[],
+		uploads=None,
+	)
+
+	assert "The project's uploaded files could not be listed, so any that take up room are not named here." in message

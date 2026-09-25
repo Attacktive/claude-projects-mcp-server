@@ -1,4 +1,4 @@
-"""Pure logic for knowledge capacity limits, verdicts, and compaction candidate ranking.
+"""Pure logic for knowledge capacity limits, verdicts, and ranking what takes up room.
 
 No network or file I/O lives here.
 """
@@ -6,11 +6,14 @@ No network or file I/O lives here.
 from dataclasses import dataclass
 from typing import Literal
 
-from .models import Document, KnowledgeStats
+from .models import Document, KnowledgeStats, UploadedFile
 
 Verdict = Literal["fits", "search_mode", "over_max"]
 
 _SEARCH_MODE_HINT = "To accept search mode instead, pass allow_search_mode=true."
+
+# As many uploads as a refusal names, matching the documents it offers to compact.
+_UPLOADS_NAMED = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +105,28 @@ def hint(verdict: Verdict) -> list[str]:
 	return [_SEARCH_MODE_HINT]
 
 
+def uploads_note(uploads: list[UploadedFile] | None) -> list[str]:
+	"""The uploads taking up room that no write from here can free, as zero or one sentence, with `None` meaning the files listing could not be fetched.
+
+	They are named apart from the compaction candidates because only the web UI can remove one, and ranked by bytes because the files listing reports no token count for them.
+	"""
+	if uploads is None:
+		return ["The project's uploaded files could not be listed, so any that take up room are not named here."]
+
+	if not uploads:
+		return []
+
+	largest = sorted(uploads, key=lambda upload: upload.size_bytes if upload.size_bytes is not None else -1, reverse=True)
+	named = "; ".join(_format_upload(upload) for upload in largest[:_UPLOADS_NAMED])
+	if len(uploads) == 1:
+		return [f"The project also holds an uploaded file, which counts toward its size but can be removed only in the web UI: {named}."]
+
+	if len(uploads) <= _UPLOADS_NAMED:
+		return [f"The project also holds {len(uploads)} uploaded files, which count toward its size but can be removed only in the web UI: {named}."]
+
+	return [f"The project also holds {len(uploads)} uploaded files, which count toward its size but can be removed only in the web UI; the largest are {named}."]
+
+
 def candidates(documents: list[Document], excluding: str) -> list[Candidate]:
 	"""Return up to three documents most worth compacting, excluding the file name being written.
 
@@ -156,10 +181,14 @@ def refusal(
 	added: int,
 	removed: int,
 	candidates_list: list[Candidate],
+	uploads: list[UploadedFile] | None,
 ) -> str:
-	"""Format the refusal message for the model when a write exceeds search threshold or maximum size."""
+	"""Format the refusal message for the model when a write exceeds search threshold or maximum size.
+
+	`uploads` is what the files listing held, or `None` when it could not be fetched.
+	"""
 	if not candidates_list:
-		candidates_sentence = "There is nothing else in the project to compact; shrink this content."
+		candidates_sentence = "There is no other document to compact; shrink this content."
 	else:
 		formatted_candidates = [_format_candidate(candidate) for candidate in candidates_list]
 		candidates_sentence = f"To make room, shrink this content, or compact one of these with write_document overwrite=true: {'; '.join(formatted_candidates)}."
@@ -169,6 +198,7 @@ def refusal(
 		consequence(verdict),
 		"The write was undone; nothing changed.",
 		candidates_sentence,
+		*uploads_note(uploads),
 		*hint(verdict),
 	]
 
@@ -186,3 +216,16 @@ def _format_candidate(candidate: Candidate) -> str:
 		return f"{candidate.file_name!r} ({tokens:,} tokens, {date_part}, an older duplicate that the next overwrite of that name removes anyway)"
 
 	return f"{candidate.file_name!r} ({tokens:,} tokens, last rewritten {date_part})"
+
+
+def _format_upload(upload: UploadedFile) -> str:
+	if upload.size_bytes is None:
+		return f"{upload.file_name!r} (size not listed)"
+
+	if upload.page_count is None:
+		return f"{upload.file_name!r} ({upload.size_bytes:,} bytes)"
+
+	if upload.page_count == 1:
+		return f"{upload.file_name!r} ({upload.size_bytes:,} bytes, 1 page)"
+
+	return f"{upload.file_name!r} ({upload.size_bytes:,} bytes, {upload.page_count:,} pages)"

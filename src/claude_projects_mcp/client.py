@@ -699,10 +699,12 @@ class ClaudeProjectsClient:
 
 		existing_documents = self.list_documents(context.project_id)
 		candidates_list = candidates(existing_documents, excluding=context.file_name)
+		# A failed listing only costs the refusal a sentence, so it must not replace the refusal with a different error.
+		uploads, _ = self.try_list_uploaded_files(context.project_id)
 		projected = context.stats.size - removed
 		_, limit_value = line_of(context.stats, verdict)
 
-		message = refusal(context.file_name, verdict, context.stats, added, removed, candidates_list)
+		message = refusal(context.file_name, verdict, context.stats, added, removed, candidates_list, uploads)
 		raise KnowledgeFullError(message, file_name=context.file_name, verdict=verdict, projected=projected, limit=limit_value)
 
 	def replace_document(

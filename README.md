@@ -11,7 +11,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 564 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All seventeen tools are implemented and covered by 570 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
 Files uploaded through the web UI, such as PDFs, are listed, pulled, pushed, and backed up before a deletion; the listing and `pull_documents` have run against real PDFs, but the push of an upload and the pre-delete backup of uploads have only run against the in-memory fake (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
@@ -54,9 +54,10 @@ Uploaded files (observed 2026-09-18) sit at `/organizations/{organization}/proje
   So only PDFs and images have appeared in a files listing so far.
 - The web UI adds a file with `POST /organizations/{organization}/projects/{uuid}/upload` (captured 2026-09-26), as `multipart/form-data` with one part named `file` carrying the file name and the file's own content type.
   The response is the row the files listing will show for it, plus a `highres_copy` block (`max_px` 2576, `max_tokens` 4784, `px_per_token` 28, `jpeg_quality` 75, `resized` false, for a 1456 by 819 PNG) whose meaning is unknown and which nothing here reads.
-  The stored name is not always the one sent: `Coffeevore (scaled).png` was listed as `Coffeevore scaled.png`, so a push reports the name the server kept and looks for the file under it next time; that one renaming is all that has been seen of the rule.
+  The stored name is not always the one sent: `Coffeevore (scaled).png` was listed as `Coffeevore scaled.png`.
+  That one renaming is all that has been seen of the rule, so a push matches exact names rather than guessing at it, and warns when the server kept another name that pushing the file again would add a second upload.
 - Adding the plain text file was a `POST` to `/docs`, the document create endpoint (observed 2026-09-26), so it is the browser that decides which files become documents and which uploads, and the upload endpoint has only been seen taking a PNG.
-  `push_documents` decides by the extension the same way, from a fixed table of PDF and the common image formats rather than the platform's mime types, which differ between machines: those are uploads, everything else a document.
+  `push_documents` decides by the extension the same way, from a fixed table rather than the platform's mime types, which differ between machines: `.pdf`, `.png`, `.jpg`, `.jpeg`, `.gif`, and `.webp` are uploads, and every other file, other image formats included, is a text document.
 - The web UI removes an upload with `DELETE .../docs/{file_uuid}`, the documents route, carrying `{"docUuid": "<file_uuid>"}` as the body (captured 2026-09-26); the response was not captured.
   Documents have been deleted through that route without a body since the spike, so the body goes along for uploads only, as captured.
 
@@ -74,7 +75,7 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
   Whether the knowledge size reflects an upload as soon as the reply arrives is unverified too; the canary asserts that it grows, and until that has been seen a size that did not move is treated as unmeasured rather than as a fit.
 - Uploads other than PDFs cannot be read.
   An image's row offers only a preview and a thumbnail (observed 2026-09-26), neither of which is the file, so `pull_documents` reports it as an error and `delete_project` refuses until it is removed in the web UI.
-  Which other kinds the web UI keeps as uploads, and whether they offer an original, is unknown: an HTML file and a plain text file became text documents instead, so only PDFs and images have been seen in a files listing, and `push_documents` sends only those two kinds as uploads, refusing any other file that is not UTF-8 text rather than guessing.
+  Which other kinds the web UI keeps as uploads, and whether they offer an original, is unknown: an HTML file and a plain text file became text documents instead, so only PDFs and images have been seen in a files listing, and `push_documents` sends only PDFs and PNG, JPEG, GIF, and WebP images as uploads, refusing any other file that is not UTF-8 text, other image formats included, rather than guessing.
   The download path still treats an HTML body as a login page served in place of the file, which nothing observed contradicts.
 - Whether the files listing truncates is unknown.
   It is a bare array like the documents listing, so it cannot say "that is all of them", and `delete_project` now relies on it before an irreversible delete; a project with many uploads is the case to check.
@@ -133,7 +134,7 @@ Run this way, the server finds the `.env` sitting next to the project by itself;
 | `rename_document` | Move a document to a new file name; a name already in use needs `overwrite=true` |
 | `delete_document` | Remove a document (always backed up first) |
 | `pull_documents` | Copy a project's documents and uploaded files into a local folder |
-| `push_documents` | Send a local folder's files into a project (gated by knowledge capacity): PDFs and images as uploaded files, everything else as text documents |
+| `push_documents` | Send a local folder's files into a project (gated by knowledge capacity): PDF, PNG, JPEG, GIF, and WebP files as uploads, everything else as text documents |
 | `list_scheduled_tasks` | Scheduled tasks, for one project or the whole account |
 | `get_scheduled_task` | One task, including the prompt it will send |
 | `create_scheduled_task` | Schedule a prompt against a project, or leave it manual-only |
@@ -168,6 +169,7 @@ The API enforces neither line on writes, so this server enforces them:
 - Uploaded files are never compaction candidates, because only the web UI can remove one, so a refusal names up to three of them in a sentence of their own, largest first.
   The files listing reports no token count for an upload, so they are ranked and described by their bytes.
 - An upload pushed from here is gated the same way, with its cost measured as the change in the knowledge size across the upload, since the API reports no token count for one; a refused upload is deleted again.
+  One the gate could not measure, because the size was not reported or did not move, is kept with a warning saying so rather than reported as checked.
 
 ## Safety
 
@@ -178,8 +180,8 @@ These are shared team documents, and the API has no server-side undo, so:
 - `write_document` accepts an `expected_uuid` to refuse the write if a teammate changed the document since you read it
 - `rename_document` re-creates the content under the new name before deleting the original — the API has no rename, so a crash midway leaves the document under both names rather than under none
 - `push_documents` never deletes remote documents that are missing locally — it is not a mirror
-- `pull_documents` copies a project's uploaded files, such as PDFs, down as bytes, and `push_documents` sends PDFs and images up as uploads, so a pull-and-push copy carries everything but images, which offer no original to copy (see To do)
-- `push_documents` replaces an existing upload only with `overwrite=true`, after backing its bytes up, and leaves an image alone, since an image offers no original to compare against or back up
+- `pull_documents` copies a project's uploaded files, such as PDFs, down as bytes, and `push_documents` sends PDF, PNG, JPEG, GIF, and WebP files up as uploads, so a pull-and-push copy carries everything but images, which offer no original to copy (see To do)
+- `push_documents` replaces an existing upload only with `overwrite=true`, after backing its bytes up, matches it by exact name only, and leaves an uploaded image alone, since an image offers no original to compare against or back up
 
 **Scheduled tasks are the deliberate exception to the backup rule.**
 `delete_scheduled_task` writes nothing to the backup directory before deleting, because a task is a name, a prompt, and a cron line — config that is cheap to retype — rather than content that cannot be reconstructed.

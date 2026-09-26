@@ -37,7 +37,8 @@ calls one at a time.
 Files uploaded through the web UI, such as PDFs, count toward the project's knowledge size
 and are a different kind of thing from a document: list_documents shows them under
 uploaded_files, pull_documents copies them down as bytes, delete_project backs them up, and
-push_documents sends a PDF or an image in the folder up as one, the way the web UI adds a file.
+push_documents sends a PDF, PNG, JPEG, GIF, or WebP file in the folder up as one, the way the
+web UI adds a file.
 Nothing here can compact one. A deletion stops with nothing deleted if any upload
 cannot be backed up, and the error names the file and why. An image offers no original to
 download, so it can be neither pulled nor replaced; a pull-and-push copy carries everything
@@ -321,7 +322,7 @@ def _upload_dict(upload: UploadedFile) -> dict:
 def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
-		description="List the text documents in a project, and under `uploaded_files` the files uploaded through the web UI, such as PDFs, which count toward `knowledge` but are not documents: pull_documents copies them, push_documents sends a PDF or an image up as one, and delete_project backs them up, but nothing here can compact one. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
+		description="List the text documents in a project, and under `uploaded_files` the files uploaded through the web UI, such as PDFs, which count toward `knowledge` but are not documents: pull_documents copies them, push_documents sends a PDF, PNG, JPEG, GIF, or WebP file up as one, and delete_project backs them up, but nothing here can compact one. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
 	)
 	def list_documents(project_id: str) -> dict:
 		with translated():
@@ -540,18 +541,18 @@ def _register_pull_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 
 
 def _push_warning(results: list[FileResult]) -> str | None:
-	"""What the model must relay about a push: where it stopped, or that a dry run could not say where it would."""
-	for result in results:
-		if result.warning is not None:
-			return result.warning
+	"""What the model must relay about a push: every distinct warning its rows carry, once each and in order.
 
-	return None
+	Where the push stopped, a dry run's caveats, an upload kept unchecked or stored under another name: taking only the first would let a dry run's note about an upload hide the refusal after it.
+	"""
+	distinct = dict.fromkeys(result.warning for result in results if result.warning is not None)
+	return _joined(*distinct)
 
 
 def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Send a local folder's files into the project: a PDF or an image goes up as an uploaded file, the way the web UI adds one, and every other file becomes a text document and must be UTF-8. The default pattern `*.md` matches no upload, so pass pattern='*' to send everything in the folder. Unchanged files are skipped, differing ones need overwrite=true (the replaced version is backed up locally first), and nothing remote that is missing locally is ever deleted. An image already in the project is left alone, since it offers no original to compare against or back up. Use dry_run=true to preview, including where the push would stop; that stop is an estimate, since a preview writes nothing to measure, and it cannot count uploads at all. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
+		description="Send a local folder's files into the project: a PDF, PNG, JPEG, GIF, or WebP file goes up as an uploaded file, the way the web UI adds one, and every other file, other image formats included, becomes a text document and must be UTF-8. The default pattern `*.md` matches no upload, so pass pattern='*' to send everything in the folder. Unchanged files are skipped, differing ones need overwrite=true (the replaced version is backed up locally first), and nothing remote that is missing locally is ever deleted. An uploaded image already in the project is left alone, since it offers no original to compare against or back up. Use dry_run=true to preview, including where the push would stop; that stop is an estimate, since a preview writes nothing to measure, and it cannot count uploads at all. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
 	)
 	def push_documents(
 		project_id: str,

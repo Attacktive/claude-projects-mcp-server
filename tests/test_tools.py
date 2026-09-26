@@ -100,9 +100,12 @@ class TestRegistration:
 	async def test_the_server_instructions_say_which_files_push_sends_as_uploads(self, server):
 		"""A model that read only the instructions would otherwise keep sending people to the web UI for a PDF, or push a spreadsheet and be surprised."""
 		assert "cannot write them" not in server.instructions
-		assert "a PDF or an image" in server.instructions
 		description = {tool.name: tool for tool in await server.list_tools()}["push_documents"].description
-		assert "a PDF or an image" in description
+		for kind in ("PDF", "PNG", "JPEG", "GIF", "WebP"):
+			assert kind in server.instructions, kind
+			assert kind in description, kind
+
+		assert "an image" not in description, "the table is five kinds, not every image format, and saying otherwise sends a TIFF down the text path unannounced"
 		assert "*.md" in description, "a model calling with the default pattern would otherwise take the PDFs in the folder for pushed"
 
 
@@ -763,6 +766,20 @@ class TestPushDocs:
 		assert result["summary"] == {"created": 1, "refused_full": 1}
 		assert "dry run" in result["warning"]
 		assert api.document_names(PROJECT) == ["seed.md"]
+
+	async def test_every_distinct_warning_in_a_push_is_relayed_once(self, api, server, tmp_path):
+		"""Relaying only the first row's warning would let a dry run's note about an upload hide the refusal after it."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "a.pdf").write_bytes(b"%PDF a")
+		(tmp_path / "b.pdf").write_bytes(b"%PDF b")
+		(tmp_path / "c.md").write_text("c" * 100, encoding="utf-8")
+
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), pattern="*", dry_run=True)
+
+		assert result["summary"] == {"created": 2, "refused_full": 1}
+		assert result["warning"].count("not previewed") == 1
+		assert "search threshold" in result["warning"]
 
 	async def test_push_documents_lifts_refusal_into_warning(self, api, server, tmp_path):
 		api.projects[PROJECT]["_search_threshold"] = 50

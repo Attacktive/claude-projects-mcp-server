@@ -670,7 +670,7 @@ def upload_posts(api):
 
 
 class TestPushUploads:
-	"""A PDF or an image in the folder goes up as an upload, the way the web UI adds one (captured 2026-09-26), so a pull-and-push copy carries them too."""
+	"""A PDF, PNG, JPEG, GIF, or WebP file in the folder goes up as an upload, the way the web UI adds one (captured 2026-09-26), so a pull-and-push copy carries them too."""
 
 	def test_a_pdf_is_pushed_as_an_upload(self, api, client, tmp_path):
 		(tmp_path / "report.pdf").write_bytes(b"%PDF-1.4\n\xe2\x80\x8b binary")
@@ -720,14 +720,16 @@ class TestPushUploads:
 		assert (result.status, result.kind) == ("created", "upload")
 		assert client.list_uploaded_files(PROJECT)[0].file_kind == "image"
 
-	def test_a_file_of_an_unobserved_kind_that_is_not_text_is_an_error(self, api, client, tmp_path):
-		"""Only PDFs and images have been seen kept as uploads, so anything else has to be text; guessing what the web UI would do with a spreadsheet is not the client's job."""
-		(tmp_path / "book.xlsx").write_bytes(b"PK\x03\x04\xff\xfe")
+	@pytest.mark.parametrize("name", ["book.xlsx", "scan.tiff", "photo.heic", "photo.bmp"])
+	def test_a_file_of_an_unobserved_kind_that_is_not_text_is_an_error_naming_what_goes_up(self, api, client, tmp_path, name):
+		"""Only PDFs and a handful of image formats go up as uploads, so anything else has to be text, other image formats included; guessing what the web UI would do with one is not the client's job."""
+		(tmp_path / name).write_bytes(b"PK\x03\x04\xff\xfe")
 
 		[result] = push(client, PROJECT, tmp_path, pattern="*")
 
 		assert result.status == "error"
-		assert result.detail is not None and "UTF-8" in result.detail and "PDF" in result.detail
+		assert result.detail is not None and "UTF-8" in result.detail
+		assert all(extension in result.detail for extension in (".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp")), result.detail
 		assert upload_posts(api) == []
 
 	def test_an_upload_matching_the_remote_bytes_is_unchanged(self, api, client, tmp_path):
@@ -797,28 +799,45 @@ class TestPushUploads:
 		assert result.file_name == "Coffeevore (scaled).png"
 		assert result.status == "created"
 		assert result.detail is not None and "'Coffeevore scaled.png'" in result.detail
+		assert result.warning is not None and "second upload" in result.warning, "a push matches exact names, so the next one adds a copy, and the model has to relay that"
 
-	def test_a_file_the_server_renamed_is_found_again_under_the_name_it_kept(self, api, client, tmp_path):
-		"""Observed 2026-09-26: parentheses are dropped server-side, so the next push has to look under that name too or add a copy every time."""
-		api.add_upload(PROJECT, "Coffeevore scaled.png", b"\x89PNG", file_kind="image")
-		(tmp_path / "Coffeevore (scaled).png").write_bytes(b"\x89PNG")
+	def test_a_local_name_binds_only_to_the_same_remote_name(self, api, client, tmp_path):
+		"""One observed rename is not a rule to match by: `report (1).pdf` is not `report 1.pdf`, and with overwrite a guessed match would back up and delete an unrelated upload."""
+		unrelated = api.add_upload(PROJECT, "report 1.pdf", b"%PDF somebody else's")
+		(tmp_path / "report (1).pdf").write_bytes(b"%PDF mine")
+		saved = []
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.png")
+		def backup_bytes(file_name, data):
+			saved.append(file_name)
+			return f"/backups/{file_name}"
 
-		assert result.status == "skipped_exists"
-		assert upload_posts(api) == []
-		assert len(client.list_uploaded_files(PROJECT)) == 1
+		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(overwrite=True, backup_bytes=backup_bytes))
 
-	def test_two_files_the_server_would_store_under_one_name_do_not_both_go_up(self, api, client, tmp_path):
-		"""The listing is taken once per push, so after an upload it has to be taken again, or the second file misses the first under the name the server gave it and adds a copy."""
+		assert result.status == "created"
+		assert saved == []
+		assert unrelated in [upload.uuid for upload in client.list_uploaded_files(PROJECT)]
+
+	def test_two_files_the_server_stores_under_one_name_both_go_up_and_neither_replaces_the_other(self, api, client, tmp_path):
+		"""A duplicate name is visible and recoverable; deleting the first file because the second was stored under its name would not be."""
 		(tmp_path / "report 1.pdf").write_bytes(b"%PDF first")
 		(tmp_path / "report (1).pdf").write_bytes(b"%PDF second, longer")
 
-		results = push(client, PROJECT, tmp_path, pattern="*.pdf")
+		results = push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(overwrite=True))
 
-		# The parenthesized name sorts first, goes up, and is stored without them; whichever order, one is created and the other finds it.
-		assert sorted(statuses(results).values()) == ["created", "skipped_exists"]
-		assert [upload.file_name for upload in client.list_uploaded_files(PROJECT)] == ["report 1.pdf"]
+		assert statuses(results) == {"report (1).pdf": "created", "report 1.pdf": "created"}
+		assert sorted(client.download_uploaded_file(upload) for upload in client.list_uploaded_files(PROJECT)) == [b"%PDF first", b"%PDF second, longer"]
+
+	@pytest.mark.parametrize(("search_threshold", "data"), [(None, b"%PDF report"), (50_000, b"")], ids=["no_knowledge_stats", "size_did_not_move"])
+	def test_an_upload_the_gate_could_not_measure_says_so(self, api, client, tmp_path, search_threshold, data):
+		"""Kept without a verdict is not the same as checked, and a caller relying on the gate has to hear the difference."""
+		api.projects[PROJECT]["_search_threshold"] = search_threshold
+		(tmp_path / "report.pdf").write_bytes(data)
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+
+		assert result.status == "created"
+		assert result.detail is not None and "capacity was not checked" in result.detail
+		assert result.warning is not None and "without a capacity check" in result.warning
 
 	def test_a_dry_run_lists_the_files_once(self, api, client, tmp_path):
 		"""The preview already fetched the listing for its refusal wording; the upload path must reuse it rather than ask again."""

@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any, Literal, Protocol
 from urllib.parse import urljoin, urlsplit
 
-from curl_cffi import requests
+from curl_cffi import CurlMime, requests
 
 from .config import DEFAULT_BASE_URL, DEFAULT_IMPERSONATE
 from .errors import (
@@ -44,6 +44,13 @@ class Transport(Protocol):
 
 		Resolved against the base URL's origin rather than appended to its path: the URLs already start with the `/api` that the default base URL ends with.
 		A base URL override that carries a path of its own therefore loses that path here, while `request` keeps it; the setting is documented as choosing the host, not a prefix.
+		"""
+		...
+
+	def upload_file(self, path: str, *, file_name: str, data: bytes, content_type: str) -> Any:
+		"""POST a file as multipart form data, the way the web UI adds one to a project's knowledge (captured 2026-09-26), and return the parsed JSON reply.
+
+		One part, named `file`, carries the filename and the file's own content type.
 		"""
 		...
 
@@ -111,6 +118,9 @@ class CurlCffiTransport:
 	def request_bytes(self, url: str) -> bytes:
 		return self._with_cold_retry(lambda: self._send_bytes(url))
 
+	def upload_file(self, path: str, *, file_name: str, data: bytes, content_type: str) -> Any:
+		return self._with_cold_retry(lambda: self._send_upload(path, file_name, data, content_type))
+
 	def _with_cold_retry(self, send: Callable[[], Any]) -> Any:
 		try:
 			return send()
@@ -148,6 +158,20 @@ class CurlCffiTransport:
 			raise ApiError("Expected a file from claude.ai but got an HTML page. This usually means a login or interstitial page was served instead of the file; the session key may have expired.", status=response.status_code)
 
 		return content
+
+	def _send_upload(self, path: str, file_name: str, data: bytes, content_type: str) -> Any:
+		# The web UI sends the file as the one part of a multipart form, named `file` and carrying its own content type (captured 2026-09-26).
+		form = CurlMime()
+		form.addpart("file", content_type=content_type, filename=file_name, data=data)
+		try:
+			# The session's Content-Type header says JSON, and libcurl keeps a custom Content-Type as it is, so the form's own type has to be named here; libcurl then appends the boundary to it.
+			# Blanking the header instead leaves libcurl appending the boundary to an empty type, and marking the part as an attachment rather than form data.
+			response = self._perform("POST", f"{self._base_url}{path}", multipart=form, headers={"Content-Type": "multipart/form-data"})
+		finally:
+			form.close()
+
+		self._check_status(response)
+		return self._decode_json(response)
 
 	def _perform(self, method: HttpMethod, url: str, **options: Any) -> Any:
 		try:

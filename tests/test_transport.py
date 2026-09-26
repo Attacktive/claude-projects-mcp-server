@@ -94,6 +94,33 @@ def test_patch_sends_a_partial_json_body(transport, httpserver):
 	assert result == {"trigger": {"id": "trig_1"}}
 
 
+def test_upload_file_sends_multipart_form_data_the_way_the_web_ui_does(transport, httpserver):
+	"""The upload request (captured 2026-09-26) is multipart form data with one part named `file` carrying the filename and the file's own content type, not the JSON the session defaults to."""
+	seen = {}
+
+	def record(request):
+		part = request.files["file"]
+		seen.update(content_type=request.content_type, filename=part.filename, part_type=part.content_type, data=part.read())
+		return Response(json.dumps({"file_uuid": "f1"}), status=200, content_type="application/json")
+
+	httpserver.expect_request("/api/projects/p1/upload", method="POST").respond_with_handler(record)
+	result = transport.upload_file("/projects/p1/upload", file_name="1.png", data=b"\x89PNG\r\n", content_type="image/png")
+
+	assert seen["content_type"].startswith("multipart/form-data; boundary=")
+	assert seen["filename"] == "1.png"
+	assert seen["part_type"] == "image/png"
+	assert seen["data"] == b"\x89PNG\r\n"
+	assert result == {"file_uuid": "f1"}
+
+
+def test_upload_file_retries_a_challenge_on_a_cold_connection(transport, httpserver):
+	"""A challenge page means Cloudflare answered instead of the API, so nothing was uploaded and the replay cannot duplicate it."""
+	seen = _challenge_then(httpserver, "/api/projects/p1/upload", {"file_uuid": "f1"}, method="POST")
+
+	assert transport.upload_file("/projects/p1/upload", file_name="1.png", data=b"\x89PNG", content_type="image/png") == {"file_uuid": "f1"}
+	assert len(seen) == 2
+
+
 def _challenge_then(httpserver, path, payload, challenges=1, method="GET"):
 	"""Serve Cloudflare's challenge page `challenges` times, then the real answer."""
 	seen = []

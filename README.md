@@ -12,7 +12,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 ## Status
 
 All seventeen tools are implemented and covered by 497 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
-Files uploaded through the web UI, such as PDFs, are listed, pulled, and backed up before a deletion, but that path is built against a captured response shape and has not yet been run against a real upload (see To do).
+Files uploaded through the web UI, such as PDFs, are listed, pulled, and backed up before a deletion; the listing and `pull_documents` have run against real PDFs, but the pre-delete backup of uploads has only run against the in-memory fake (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
 What that established, and what the implementation now relies on:
@@ -56,9 +56,10 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
 
 ## To do
 
-- The download path has not been run against a real upload.
-  Listing, `pull_documents`, and the pre-delete backup are built against the captured listing shape and the in-memory fake; `tests/live/test_contract.py` has opt-in checks that list a throwaway project's uploads and download the first real one on the account.
-  Run them with `CLAUDE_PROJECTS_LIVE_TESTS=1` against an account holding a PDF before trusting a pull or a deletion with uploads in it.
+- The pre-delete backup of uploads has not been run against a real upload.
+  The listing and `pull_documents` have: on 2026-09-18 the server pulled two real PDFs, with the size check passing and `%PDF` at the start of each file on disk, and `tests/live/test_contract.py` has opt-in checks that list a throwaway project's uploads and download the first real one on the account.
+  `delete_project` backs an upload up with that same download, but what it adds, refusing an upload with no original or no size and stopping before anything is deleted when a backup fails, has only run against the in-memory fake.
+  Run the live suite with `CLAUDE_PROJECTS_LIVE_TESTS=1` against an account holding a PDF, then delete a throwaway project holding one and check the backup directory, before trusting a deletion with uploads in it.
 - Uploaded files cannot be written from here.
   Adding or replacing a PDF means the web UI until the upload endpoint is observed, and a pull-and-push copy therefore carries the documents only.
 - Uploads that are not documents cannot be read either.

@@ -49,7 +49,7 @@ Uploaded files (observed 2026-09-18) sit at `/organizations/{organization}/proje
   The client then checks the byte count against `size_bytes`, the one thing the listing says about the file's contents.
 - Only a `document_asset` whose `file_variant` is `original` counts as the file.
   A PDF has one; an image (observed 2026-09-26) has a `preview_asset` and a `thumbnail_asset`, which are renditions, and no `document_asset` key at all, so it is listed but can be neither pulled nor backed up.
-  That image accounted for a knowledge-size gap of 4 tokens, so an image counts toward the size, but barely.
+  That image, 8,929 bytes, accounted for 4 tokens of the knowledge size.
 - An HTML file and a plain text file added through the web UI's knowledge upload (observed 2026-09-26) became text documents rather than uploads, the HTML one keeping its markup.
   So only PDFs and images have appeared in a files listing so far.
 - Nothing here can upload one.

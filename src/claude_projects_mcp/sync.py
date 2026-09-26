@@ -2,7 +2,8 @@
 
 Claude Code is file-native: pulling once, editing with ordinary tools, and pushing backbeats pushing whole documents through tool calls one at a time.
 
-Pulling brings down the documents and the files uploaded through the web UI; pushing carries text documents only, because nothing here can upload a file, so a pull-and-push copy is not a full migration.
+Pulling brings down the documents and the files uploaded through the web UI, and pushing sends both kinds back: a PDF or an image goes up as an upload, the way the web UI adds one (captured 2026-09-26), and everything else as a text document.
+An image is reported rather than copied on a pull, since the listing offers no original for one, so a pull-and-push copy carries everything but images.
 
 Both directions are deliberately conservative.
 Neither deletes anything the other side is missing, and neither overwrites differing content without being asked.
@@ -17,7 +18,7 @@ from pathlib import Path, PurePath
 from typing import Self
 
 from .capacity import Verdict, admits, by_name, consequence, crossing, hint, judge, tokens_of, uploads_note
-from .client import ClaudeProjectsClient
+from .client import ClaudeProjectsClient, ReplaceResult
 from .errors import ClaudeProjectsError, InvalidPatternError, KnowledgeFullError
 from .filenames import deduplicate, safe_child, sanitize
 from .models import Document, KnowledgeStats, UploadedFile
@@ -34,6 +35,19 @@ _FALLBACK_TOKENS_PER_CHARACTER = 0.3
 
 # How many documents a dry run fetches whole to learn that rate when the listing carries token counts but no text.
 _CALIBRATION_SAMPLE = 3
+
+# The files pushed as uploads rather than as text documents, by extension, and the content type each goes up with.
+# PDFs and images are the kinds the web UI has been seen keeping as uploads (observed 2026-09-26; an HTML file and a plain text file became documents), and these are the common image formats.
+# A fixed table rather than the platform's mime types, which differ from machine to machine and would push the same folder differently from a bare container.
+# An SVG is left out on purpose: it is text, and what the web UI makes of one is unobserved.
+_UPLOAD_TYPES = {
+	".pdf": "application/pdf",
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +68,9 @@ class PushOptions:
 	overwrite: bool = False
 	dry_run: bool = False
 	allow_search_mode: bool = False
+	# Where a replaced document's text goes before the replacement, and where a replaced upload's bytes go; each receives (file_name, previous) and returns the path written.
 	backup: Callable[[str, str], str] | None = None
+	backup_bytes: Callable[[str, bytes], str] | None = None
 
 
 def summarise(results: list[FileResult]) -> dict[str, int]:
@@ -211,6 +227,62 @@ def _pull_one(
 		return FileResult(document.file_name, "error", detail=str(exception))
 
 
+class _RemoteUploads:
+	"""The project's uploads by name, listed the first time a file is pushed as one and never otherwise, since most pushes carry text alone.
+
+	A listing that fails is remembered rather than retried per file: pushing an upload blind would mint a duplicate, and one round trip that failed is not made to fail again for every PDF in the folder.
+	"""
+
+	def __init__(self, client: ClaudeProjectsClient, project_id: str, known: list[UploadedFile] | None = None):
+		self._client = client
+		self._project_id = project_id
+		self._by_name: dict[str, list[UploadedFile]] | None = None
+		self._failure: ClaudeProjectsError | None = None
+		# A dry run's preview has already fetched the listing for its refusal wording, so it is taken rather than asked for twice.
+		if known is not None:
+			self._group(known)
+
+	def named(self, file_name: str) -> list[UploadedFile]:
+		"""Every remote upload of this name, newest first, or a raise saying the listing could not be fetched.
+
+		A file is also looked for under the name the server would store it as, as far as that renaming has been observed, so a file the server renamed on the last push is found rather than uploaded again.
+		"""
+		if self._by_name is None and self._failure is None:
+			self._list()
+
+		if self._by_name is None:
+			raise ClaudeProjectsError(f"the project's uploaded files could not be listed, so whether {file_name!r} is already there is unknown and it was not uploaded: {self._failure}")
+
+		return self._by_name.get(file_name) or self._by_name.get(_as_stored(file_name), [])
+
+	def forget(self) -> None:
+		"""Drop the listing after an upload changed it, so the next lookup asks again rather than missing what this push just added.
+
+		Two files the server would store under one name are the case: the second has to find the first, or it adds a copy.
+		"""
+		self._by_name = None
+
+	def _list(self) -> None:
+		uploads, failure = self._client.try_list_uploaded_files(self._project_id)
+		if uploads is None:
+			self._failure = failure
+			return
+
+		self._group(uploads)
+
+	def _group(self, uploads: list[UploadedFile]) -> None:
+		grouped: dict[str, list[UploadedFile]] = {}
+		for upload in uploads:
+			grouped.setdefault(upload.file_name, []).append(upload)
+
+		self._by_name = grouped
+
+
+def _as_stored(file_name: str) -> str:
+	"""The name the server kept for a file, as far as its renaming has been observed: `Coffeevore (scaled).png` was listed as `Coffeevore scaled.png` (2026-09-26), and nothing else has been seen changed."""
+	return file_name.replace("(", "").replace(")", "")
+
+
 @dataclass(frozen=True, slots=True)
 class _PushContext:
 	"""What every file in one push shares."""
@@ -224,6 +296,8 @@ class _PushContext:
 	options: PushOptions
 	# Present on a dry run only.
 	preview: _Preview | None
+	# The files listing, fetched only if a file in the folder is pushed as an upload.
+	uploads: _RemoteUploads
 
 
 @dataclass(slots=True)
@@ -279,6 +353,18 @@ class _Preview:
 
 		message = self._refusal(name, verdict, after_create, added, removed)
 		return FileResult(name, "refused_full", local_path=str(path), detail=message, warning=message)
+
+	def upload_result(self, name: str, path: Path, status: str) -> FileResult:
+		"""The row the real push would produce for an upload, whose cost it cannot estimate.
+
+		The API reports no token count for an upload, and the bytes of a PDF say nothing about its tokens, so the size is carried forward unchanged and every row says so.
+		"""
+		if self.unavailable is not None:
+			note = f"dry run; where the push would stop was not previewed: {self.unavailable}"
+		else:
+			note = "dry run; what an upload adds to the knowledge size is not previewed, since the API reports no token count for one, so the real push may stop earlier than this preview says"
+
+		return FileResult(name, status, local_path=str(path), detail=note, warning=note, kind="upload")
 
 	def _rate(self) -> float:
 		if self.tokens_per_character is None:
@@ -356,8 +442,9 @@ def push(
 	pattern: str = "*.md",
 	options: PushOptions | None = None,
 ) -> list[FileResult]:
-	"""Upload `source_directory`'s files into the project.
+	"""Send `source_directory`'s files into the project: a PDF or an image as an upload, the way the web UI adds one, and everything else as a text document.
 
+	The name decides the kind, since that is what the web UI has been seen going by (observed 2026-09-26: a PNG became an upload, an HTML file and a plain text file became documents), so a file of any other kind that is not UTF-8 text is an error rather than a guess.
 	Never deletes remote documents that are missing locally: a partial folder must not prune a shared project.
 	Matches only the files directly inside the folder, and refuses a pattern that reaches elsewhere, because a project's documents are a flat list and recursing would collide names.
 	A file that resolves outside the folder, such as a symbolic link to somewhere else on disk, is reported rather than uploaded.
@@ -379,7 +466,11 @@ def push(
 	if matching_paths:
 		preview = _Preview.of(client, project_id, documents, options)
 
-	context = _PushContext(client, project_id, source.resolve(), by_name(documents), options, preview)
+	known_uploads = None
+	if preview is not None:
+		known_uploads = preview.uploads
+
+	context = _PushContext(client, project_id, source.resolve(), by_name(documents), options, preview, _RemoteUploads(client, project_id, known_uploads))
 
 	return _push_all(context, matching_paths)
 
@@ -444,12 +535,24 @@ def _escape_of(context: _PushContext, path: Path) -> FileResult | None:
 	return FileResult(path.name, "error", local_path=str(path), detail=f"resolves to somewhere outside the source folder {context.source}; only files inside it are uploaded")
 
 
+def _upload_type_of(file_name: str) -> str | None:
+	"""The content type a file goes up with as an upload, from its extension, or None for a file that is pushed as a text document.
+
+	Anything not in the table is a document, so a file of another kind that is not UTF-8 text is an error rather than a guess at what the web UI would make of it.
+	"""
+	return _UPLOAD_TYPES.get(PurePath(file_name).suffix.lower())
+
+
 def _push_one(context: _PushContext, path: Path) -> FileResult:
 	name = path.name
+	content_type = _upload_type_of(name)
+	if content_type is not None:
+		return _push_upload(context, path, name, content_type)
+
 	try:
 		content = path.read_text(encoding="utf-8")
 	except UnicodeDecodeError:
-		return FileResult(name, "error", local_path=str(path), detail="not UTF-8 text; only text documents can be uploaded")
+		return FileResult(name, "error", local_path=str(path), detail="not UTF-8 text, and a file becomes a text document unless its name says it is a PDF or an image, the kinds the web UI keeps as uploads")
 	except OSError as exception:
 		return FileResult(name, "error", local_path=str(path), detail=str(exception))
 
@@ -507,3 +610,85 @@ def _push_existing(context: _PushContext, path: Path, name: str, content: str, c
 		detail = f"saved, but {len(result.failed_delete_uuids)} old copy could not be removed and remains as a duplicate"
 
 	return FileResult(name, "replaced", local_path=str(path), detail=detail, backup_path=result.backup_path)
+
+
+def _push_upload(context: _PushContext, path: Path, name: str, content_type: str) -> FileResult:
+	"""A PDF or an image, sent as an upload, under the same rules about when to write as a document: over bytes and the files listing rather than text and the documents listing."""
+	try:
+		data = path.read_bytes()
+		copies = context.uploads.named(name)
+		if not copies:
+			return _push_new_upload(context, path, name, data, content_type)
+
+		return _push_existing_upload(context, path, name, data, content_type, copies)
+	except KnowledgeFullError as exception:
+		return FileResult(name, "refused_full", local_path=str(path), detail=str(exception), warning=str(exception), kind="upload")
+	except (ClaudeProjectsError, OSError) as exception:
+		return FileResult(name, "error", local_path=str(path), detail=str(exception), kind="upload")
+
+
+def _push_new_upload(context: _PushContext, path: Path, name: str, data: bytes, content_type: str) -> FileResult:
+	if context.preview is not None:
+		return context.preview.upload_result(name, path, "created")
+
+	result = context.client.upload_file(context.project_id, name, data, content_type, allow_search_mode=context.options.allow_search_mode)
+	context.uploads.forget()
+	return _upload_row(path, name, "created", result, replacing=None)
+
+
+def _push_existing_upload(context: _PushContext, path: Path, name: str, data: bytes, content_type: str, copies: list[UploadedFile]) -> FileResult:
+	"""Compare against the newest copy; a replacement takes every copy with it, as a document's does."""
+	existing = copies[0]
+	if existing.download_url is None:
+		# An image offers no original to compare against or to back up (observed 2026-09-26), so it can be neither called unchanged nor replaced, and the row must not promise that overwrite would help.
+		return FileResult(name, "skipped_exists", local_path=str(path), detail="an upload of this name is already in the project, and it offers no downloadable original to compare against or back up, so it is left as it is; remove it in the web UI to push this file", kind="upload")
+
+	if _same_bytes(context.client, existing, data):
+		return FileResult(name, "unchanged", local_path=str(path), kind="upload")
+
+	if not context.options.overwrite:
+		return FileResult(name, "skipped_exists", local_path=str(path), detail="remote upload differs; pass overwrite to replace it", kind="upload")
+
+	if context.preview is not None:
+		return context.preview.upload_result(name, path, "replaced")
+
+	result = context.client.upload_file(
+		context.project_id,
+		name,
+		data,
+		content_type,
+		replacing=copies,
+		allow_search_mode=context.options.allow_search_mode,
+		backup=context.options.backup_bytes,
+	)
+
+	context.uploads.forget()
+	return _upload_row(path, name, "replaced", result, replacing=existing)
+
+
+def _same_bytes(client: ClaudeProjectsClient, existing: UploadedFile, data: bytes) -> bool:
+	"""Whether the remote upload already holds these bytes; a size that disagrees settles it without a download."""
+	if existing.size_bytes is not None and existing.size_bytes != len(data):
+		return False
+
+	return client.download_uploaded_file(existing) == data
+
+
+def _upload_row(path: Path, name: str, status: str, result: ReplaceResult, replacing: UploadedFile | None) -> FileResult:
+	"""The row for an upload that went through, including what did not go to plan: a rollback that failed, a name the server changed, an old copy that would not delete."""
+	if result.rollback_failed:
+		detail = f"upload took the project past capacity and could not be undone: deleting new upload {result.uuid} failed."
+		if replacing is not None:
+			detail = f"{detail} The previous upload {replacing.uuid} was left in place."
+
+		return FileResult(name, "written_over_capacity", local_path=str(path), detail=detail, backup_path=result.backup_path, warning=detail, kind="upload")
+
+	notes = []
+	if result.file_name != name:
+		# Observed 2026-09-26: `Coffeevore (scaled).png` was stored as `Coffeevore scaled.png`; the lookup knows that one renaming, and a file renamed some other way would be uploaded again next time.
+		notes.append(f"stored as {result.file_name!r}, a name the server chose; the next push looks for this file under that name too, as far as the server's renaming has been observed, so check it for a second copy")
+
+	if result.failed_delete_uuids:
+		notes.append(f"saved, but {len(result.failed_delete_uuids)} old copy could not be removed and remains as a duplicate")
+
+	return FileResult(name, status, local_path=str(path), detail="; ".join(notes) or None, backup_path=result.backup_path, kind="upload")

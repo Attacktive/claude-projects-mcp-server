@@ -36,10 +36,12 @@ calls one at a time.
 
 Files uploaded through the web UI, such as PDFs, count toward the project's knowledge size
 and are a different kind of thing from a document: list_documents shows them under
-uploaded_files, pull_documents copies them down as bytes, and delete_project backs them up,
-but push_documents cannot write them and nothing here can compact them. A deletion stops with
-nothing deleted if any upload cannot be backed up, and the error names the file and why.
-Changing or adding an upload means the web UI, so a pull-and-push copy carries the documents only.
+uploaded_files, pull_documents copies them down as bytes, delete_project backs them up, and
+push_documents sends a PDF or an image in the folder up as one, the way the web UI adds a file.
+Nothing here can compact one. A deletion stops with nothing deleted if any upload
+cannot be backed up, and the error names the file and why. An image offers no original to
+download, so it can be neither pulled nor replaced; a pull-and-push copy carries everything
+but images.
 
 A project's knowledge has two lines, both reported by list_documents: a search threshold, past
 which Claude in the web UI retrieves from the knowledge instead of reading all of it, and a
@@ -110,6 +112,13 @@ def _assemble(settings: Settings, client: ClaudeProjectsClient) -> MCPServer:
 def _backup_for(backups: BackupStore, project_id: str):
 	def save(file_name: str, content: str) -> str:
 		return str(backups.save(project_id, file_name, content))
+
+	return save
+
+
+def _backup_bytes_for(backups: BackupStore, project_id: str):
+	def save(file_name: str, data: bytes) -> str:
+		return str(backups.save_bytes(project_id, file_name, data))
 
 	return save
 
@@ -312,7 +321,7 @@ def _upload_dict(upload: UploadedFile) -> dict:
 def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(read_only_hint=True),
-		description="List the text documents in a project, and under `uploaded_files` the files uploaded through the web UI, such as PDFs, which count toward `knowledge` but are not documents: pull_documents copies them and delete_project backs them up, but nothing here can write or compact them. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
+		description="List the text documents in a project, and under `uploaded_files` the files uploaded through the web UI, such as PDFs, which count toward `knowledge` but are not documents: pull_documents copies them, push_documents sends a PDF or an image up as one, and delete_project backs them up, but nothing here can compact one. `knowledge` reports the project's size against its search threshold and its maximum. `duplicate_file_names` flags names held by more than one document, which happens when a save is interrupted; the next write_document with overwrite=true cleans them up. Relay any `warning` in the result to the user verbatim.",
 	)
 	def list_documents(project_id: str) -> dict:
 		with translated():
@@ -542,7 +551,7 @@ def _push_warning(results: list[FileResult]) -> str | None:
 def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Upload a local folder's text files into the project. Unchanged files are skipped, differing ones need overwrite=true, and remote documents missing locally are never deleted; the project's uploaded files are untouched and cannot be pushed. Use dry_run=true to preview, including where the push would stop; that stop is an estimate, since a preview writes nothing to measure. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
+		description="Send a local folder's files into the project: a PDF or an image goes up as an uploaded file, the way the web UI adds one, and every other file becomes a text document and must be UTF-8. The default pattern `*.md` matches no upload, so pass pattern='*' to send everything in the folder. Unchanged files are skipped, differing ones need overwrite=true (the replaced version is backed up locally first), and nothing remote that is missing locally is ever deleted. An image already in the project is left alone, since it offers no original to compare against or back up. Use dry_run=true to preview, including where the push would stop; that stop is an estimate, since a preview writes nothing to measure, and it cannot count uploads at all. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
 	)
 	def push_documents(
 		project_id: str,
@@ -559,6 +568,7 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 					dry_run=dry_run,
 					allow_search_mode=allow_search_mode,
 					backup=_backup_for(backups, project_id),
+					backup_bytes=_backup_bytes_for(backups, project_id),
 				)
 
 				results = push(

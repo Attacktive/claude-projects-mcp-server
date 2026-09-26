@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 
 from claude_projects_mcp.client import ClaudeProjectsClient
-from claude_projects_mcp.errors import ApiError, NotFoundError, RateLimitedError
+from claude_projects_mcp.errors import ApiError, BackupError, KnowledgeFullError, NotFoundError, RateLimitedError
 from claude_projects_mcp.models import UploadedFile
 
 from .conftest import ORGANIZATION, PROJECT
@@ -301,3 +301,195 @@ class TestUploadedFiles:
 
 		assert [upload.file_name for upload in uploads] == ["report.pdf"]
 		assert failure is None
+
+
+class TestUploadingFiles:
+	"""Sending a file the way the web UI adds one to a project's knowledge (captured 2026-09-26), and removing one the way it does too."""
+
+	def test_uploads_a_file_and_lists_it(self, api, client):
+		result = client.upload_file(PROJECT, "photo.png", b"\x89PNG\r\n", "image/png")
+
+		[upload] = client.list_uploaded_files(PROJECT)
+		assert result.uuid == upload.uuid
+		assert result.action == "created"
+		assert upload.file_name == "photo.png"
+		assert upload.file_kind == "image"
+		assert upload.size_bytes == len(b"\x89PNG\r\n")
+
+	def test_a_pdf_lists_as_a_document_upload_with_its_original(self, api, client):
+		client.upload_file(PROJECT, "report.pdf", b"%PDF-1.4 report", "application/pdf")
+
+		[upload] = client.list_uploaded_files(PROJECT)
+		assert upload.file_kind == "document"
+		assert client.download_uploaded_file(upload) == b"%PDF-1.4 report"
+
+	def test_the_name_the_server_kept_is_reported(self, api, client):
+		"""Observed 2026-09-26: a file sent as `Coffeevore (scaled).png` was listed as `Coffeevore scaled.png`, so the caller has to be told the stored name rather than assume its own."""
+		result = client.upload_file(PROJECT, "Coffeevore (scaled).png", b"\x89PNG", "image/png")
+
+		assert result.file_name == "Coffeevore scaled.png"
+		assert [upload.file_name for upload in client.list_uploaded_files(PROJECT)] == ["Coffeevore scaled.png"]
+
+	def test_a_rate_limited_upload_is_retried(self, api):
+		slept = []
+		client = ClaudeProjectsClient(api, sleep=slept.append)
+		api.fail_once("POST", "/upload$", RateLimitedError("slow down", retry_after=1))
+
+		client.upload_file(PROJECT, "photo.png", b"\x89PNG", "image/png")
+
+		assert slept == [1]
+		assert len(client.list_uploaded_files(PROJECT)) == 1
+
+	def test_deletes_an_upload(self, api, client):
+		uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		assert client.delete_uploaded_file(PROJECT, uuid) is True
+		assert client.list_uploaded_files(PROJECT) == []
+
+	def test_deleting_an_upload_already_gone_is_not_an_error(self, client):
+		assert client.delete_uploaded_file(PROJECT, "never-existed") is False
+
+	def test_an_upload_is_deleted_through_the_documents_route_with_its_uuid_in_the_body(self, api, client):
+		"""Captured 2026-09-26: the web UI removes an upload with `DELETE .../docs/{uuid}` and a body of `{"docUuid": uuid}`, the documents route rather than a files one."""
+		uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+
+		client.delete_uploaded_file(PROJECT, uuid)
+
+		assert ("DELETE", f"/organizations/{ORGANIZATION}/projects/{PROJECT}/docs/{uuid}") in api.log
+		assert api.bodies_logged()[-1] == {"docUuid": uuid}
+
+	def test_an_upload_crossing_the_search_threshold_is_refused_and_removed(self, api, client):
+		"""The API reports no token count for an upload, so its cost is the change in the knowledge size across the upload; a refused one is deleted again."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+
+		with pytest.raises(KnowledgeFullError) as exception_info:
+			client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf")
+
+		assert "search threshold" in str(exception_info.value)
+		assert "'big.pdf'" in str(exception_info.value)
+		assert "100 tokens" in str(exception_info.value)
+		assert client.list_uploaded_files(PROJECT) == []
+
+	def test_an_upload_crossing_the_search_threshold_is_kept_when_search_mode_is_allowed(self, api, client):
+		api.projects[PROJECT]["_search_threshold"] = 50
+
+		result = client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf", allow_search_mode=True)
+
+		assert result.entered_search_mode is True
+		assert len(client.list_uploaded_files(PROJECT)) == 1
+
+	def test_an_upload_past_the_maximum_is_refused_whatever_the_caller_allows(self, api, client):
+		api.projects[PROJECT]["_max_knowledge_size"] = 50
+
+		with pytest.raises(KnowledgeFullError) as exception_info:
+			client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf", allow_search_mode=True)
+
+		assert "maximum" in str(exception_info.value)
+		assert client.list_uploaded_files(PROJECT) == []
+
+	def test_a_refusal_survives_a_documents_listing_that_fails(self, api, client):
+		"""The listing only feeds the refusal's advice on what to compact; a failure there must not turn the refusal into some other error, or a push would carry on into a full project."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.fail_once("GET", "/docs$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		with pytest.raises(KnowledgeFullError) as exception_info:
+			client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf")
+
+		assert "could not be listed" in str(exception_info.value)
+		assert client.list_uploaded_files(PROJECT) == []
+
+	def test_a_refused_upload_whose_removal_fails_is_reported_rather_than_raised(self, api, client):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.fail_once("DELETE", "/docs/", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		result = client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf")
+
+		assert result.rollback_failed is True
+		assert len(client.list_uploaded_files(PROJECT)) == 1
+
+	def test_without_knowledge_stats_an_upload_goes_through_unchecked(self, api, client):
+		api.projects[PROJECT]["_search_threshold"] = None
+
+		result = client.upload_file(PROJECT, "photo.png", b"\x89PNG", "image/png")
+
+		assert result.knowledge is None
+		assert len(client.list_uploaded_files(PROJECT)) == 1
+
+	def test_a_knowledge_size_that_did_not_move_is_an_unchecked_upload_rather_than_a_fit(self, api, client):
+		"""A count that did not change cannot be told from one not yet updated, so the result must not claim a verdict it never reached."""
+		api.projects[PROJECT]["_max_knowledge_size"] = 50
+		api.add_document(PROJECT, "full.md", "x" * 60)
+
+		result = client.upload_file(PROJECT, "empty.pdf", b"", "application/pdf")
+
+		assert result.knowledge is None
+		assert len(client.list_uploaded_files(PROJECT)) == 1
+
+	def test_replacing_backs_the_old_upload_up_before_sending_and_removes_it_after(self, api, client):
+		old_uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF old")
+		[old] = client.list_uploaded_files(PROJECT)
+		saved = []
+
+		def backup(file_name, data):
+			saved.append((file_name, data, api.methods_logged().count("POST")))
+			return f"/backups/{file_name}"
+
+		result = client.upload_file(PROJECT, "report.pdf", b"%PDF new", "application/pdf", replacing=[old], backup=backup)
+
+		assert saved == [("report.pdf", b"%PDF old", 0)], "backed up before anything was sent"
+		assert result.action == "replaced"
+		assert result.replaced_uuids == [old_uuid]
+		assert result.backup_path == "/backups/report.pdf"
+		[remaining] = client.list_uploaded_files(PROJECT)
+		assert remaining.uuid == result.uuid
+		assert client.download_uploaded_file(remaining) == b"%PDF new"
+
+	def test_a_backup_that_fails_stops_the_upload_before_anything_is_sent(self, api, client):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF old")
+		[old] = client.list_uploaded_files(PROJECT)
+
+		def backup(file_name, data):
+			raise BackupError("disk full")
+
+		with pytest.raises(BackupError):
+			client.upload_file(PROJECT, "report.pdf", b"%PDF new", "application/pdf", replacing=[old], backup=backup)
+
+		assert "POST" not in api.methods_logged()
+		assert [upload.uuid for upload in client.list_uploaded_files(PROJECT)] == [old.uuid]
+
+	def test_replacing_an_upload_with_no_original_is_refused_before_anything_is_sent(self, api, client):
+		"""An image offers no original to back up, and no path here deletes what it could not save first."""
+		api.add_upload(PROJECT, "photo.png", b"old png", file_kind="image")
+		[old] = client.list_uploaded_files(PROJECT)
+
+		with pytest.raises(BackupError) as exception_info:
+			client.upload_file(PROJECT, "photo.png", b"new png", "image/png", replacing=[old], backup=lambda file_name, data: "/backups/photo.png")
+
+		assert "no downloadable original" in str(exception_info.value)
+		assert "POST" not in api.methods_logged()
+		assert [upload.uuid for upload in client.list_uploaded_files(PROJECT)] == [old.uuid]
+
+	def test_replacing_refuses_when_any_older_copy_has_no_original(self, api, client):
+		"""Every copy in `replacing` is deleted afterward, so every one of them has to be backable, not only the newest."""
+		api.add_upload(PROJECT, "chart.png", b"old png", file_kind="image")
+		api.add_upload(PROJECT, "chart.png", b"%PDF misnamed")
+		copies = client.list_uploaded_files(PROJECT)
+		assert copies[0].download_url is not None, "the newest copy is the one with an original"
+
+		with pytest.raises(BackupError) as exception_info:
+			client.upload_file(PROJECT, "chart.png", b"new png", "image/png", replacing=copies, backup=lambda file_name, data: "/backups/chart.png")
+
+		assert "no downloadable original" in str(exception_info.value)
+		assert "POST" not in api.methods_logged()
+		assert len(client.list_uploaded_files(PROJECT)) == 2
+
+	def test_a_replacement_whose_old_copy_will_not_delete_is_reported(self, api, client):
+		old_uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF old")
+		[old] = client.list_uploaded_files(PROJECT)
+		api.fail_once("DELETE", f"/docs/{old_uuid}$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		result = client.upload_file(PROJECT, "report.pdf", b"%PDF new", "application/pdf", replacing=[old])
+
+		assert result.replaced_uuids == []
+		assert result.failed_delete_uuids == [old_uuid]
+		assert len(client.list_uploaded_files(PROJECT)) == 2

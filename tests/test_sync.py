@@ -663,3 +663,225 @@ class TestPullUploads:
 		api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
 
 		assert statuses(pull(client, PROJECT, tmp_path)) == {"report.pdf": "written"}
+
+
+def upload_posts(api):
+	return [path for method, path in api.log if method == "POST" and path.endswith("/upload")]
+
+
+class TestPushUploads:
+	"""A PDF or an image in the folder goes up as an upload, the way the web UI adds one (captured 2026-09-26), so a pull-and-push copy carries them too."""
+
+	def test_a_pdf_is_pushed_as_an_upload(self, api, client, tmp_path):
+		(tmp_path / "report.pdf").write_bytes(b"%PDF-1.4\n\xe2\x80\x8b binary")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*")
+
+		assert result.status == "created"
+		assert result.kind == "upload"
+		[upload] = client.list_uploaded_files(PROJECT)
+		assert upload.file_name == "report.pdf"
+		assert upload.file_kind == "document"
+		assert client.download_uploaded_file(upload) == b"%PDF-1.4\n\xe2\x80\x8b binary"
+		assert api.document_names(PROJECT) == []
+
+	def test_a_pdf_that_happens_to_be_utf8_text_is_still_an_upload(self, api, client, tmp_path):
+		"""The name says what the web UI would make of it; a PDF small enough to be pure ASCII is still a PDF."""
+		(tmp_path / "tiny.pdf").write_bytes(b"%PDF-1.4 ascii only")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+
+		assert result.kind == "upload"
+		assert api.document_names(PROJECT) == []
+
+	@pytest.mark.parametrize("name", ["REPORT.PDF", "photo.JPG", "photo.jpeg", "animation.gif", "photo.webp"])
+	def test_the_kind_comes_from_a_fixed_list_of_extensions_whatever_the_case(self, api, client, tmp_path, name):
+		"""Not from the platform's mime table, which differs between machines and would make the same folder push differently from a bare container."""
+		(tmp_path / name).write_bytes(b"\xff\xd8 bytes")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*")
+
+		assert (result.status, result.kind) == ("created", "upload"), name
+
+	def test_an_svg_is_text_and_goes_up_as_a_document(self, api, client, tmp_path):
+		"""What the web UI makes of an SVG is unobserved, and it is UTF-8 text, so it takes the path every unobserved kind takes."""
+		(tmp_path / "diagram.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*")
+
+		assert (result.status, result.kind) == ("created", "document")
+		assert api.document_names(PROJECT) == ["diagram.svg"]
+
+	def test_an_image_is_pushed_as_an_upload_with_its_content_type(self, api, client, tmp_path):
+		(tmp_path / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.png")
+
+		assert (result.status, result.kind) == ("created", "upload")
+		assert client.list_uploaded_files(PROJECT)[0].file_kind == "image"
+
+	def test_a_file_of_an_unobserved_kind_that_is_not_text_is_an_error(self, api, client, tmp_path):
+		"""Only PDFs and images have been seen kept as uploads, so anything else has to be text; guessing what the web UI would do with a spreadsheet is not the client's job."""
+		(tmp_path / "book.xlsx").write_bytes(b"PK\x03\x04\xff\xfe")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*")
+
+		assert result.status == "error"
+		assert result.detail is not None and "UTF-8" in result.detail and "PDF" in result.detail
+		assert upload_posts(api) == []
+
+	def test_an_upload_matching_the_remote_bytes_is_unchanged(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF same")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF same")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+
+		assert (result.status, result.kind) == ("unchanged", "upload")
+		assert upload_posts(api) == []
+
+	def test_an_upload_of_another_size_is_skipped_without_a_download(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF remote")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF local copy")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+
+		assert result.status == "skipped_exists"
+		assert result.detail is not None and "overwrite" in result.detail
+		assert not [entry for entry in api.log if "document_pdf" in entry[1]], "the size alone settled it"
+
+	def test_a_differing_upload_of_the_same_size_is_compared_byte_for_byte(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "report.pdf", b"%PDF remote")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF loca1!")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+
+		assert result.status == "skipped_exists"
+		assert [entry for entry in api.log if "document_pdf" in entry[1]], "the same size is not the same bytes"
+
+	def test_overwrite_replaces_the_remote_upload_after_backing_it_up(self, api, client, tmp_path):
+		old_uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF remote")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF local")
+		saved = []
+
+		def backup_bytes(file_name, data):
+			saved.append((file_name, data))
+			return f"/backups/{file_name}"
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(overwrite=True, backup_bytes=backup_bytes))
+
+		assert (result.status, result.kind, result.backup_path) == ("replaced", "upload", "/backups/report.pdf")
+		assert saved == [("report.pdf", b"%PDF remote")]
+		[upload] = client.list_uploaded_files(PROJECT)
+		assert upload.uuid != old_uuid
+		assert client.download_uploaded_file(upload) == b"%PDF local"
+
+	def test_an_image_already_in_the_project_is_left_alone_whatever_the_options(self, api, client, tmp_path):
+		"""An image offers no original to compare against or back up, so it can be neither called unchanged nor replaced; the row says so instead of promising that overwrite would help."""
+		api.add_upload(PROJECT, "photo.png", b"old png", file_kind="image")
+		(tmp_path / "photo.png").write_bytes(b"old png")
+
+		for options in (PushOptions(), PushOptions(overwrite=True, backup_bytes=lambda file_name, data: "/backups/photo.png")):
+			[result] = push(client, PROJECT, tmp_path, pattern="*.png", options=options)
+
+			assert result.status == "skipped_exists"
+			assert result.detail is not None and "original" in result.detail and "overwrite" not in result.detail
+
+		assert upload_posts(api) == []
+		assert len(client.list_uploaded_files(PROJECT)) == 1
+
+	def test_the_stored_name_is_reported_when_the_server_changes_it(self, api, client, tmp_path):
+		(tmp_path / "Coffeevore (scaled).png").write_bytes(b"\x89PNG")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.png")
+
+		assert result.file_name == "Coffeevore (scaled).png"
+		assert result.status == "created"
+		assert result.detail is not None and "'Coffeevore scaled.png'" in result.detail
+
+	def test_a_file_the_server_renamed_is_found_again_under_the_name_it_kept(self, api, client, tmp_path):
+		"""Observed 2026-09-26: parentheses are dropped server-side, so the next push has to look under that name too or add a copy every time."""
+		api.add_upload(PROJECT, "Coffeevore scaled.png", b"\x89PNG", file_kind="image")
+		(tmp_path / "Coffeevore (scaled).png").write_bytes(b"\x89PNG")
+
+		[result] = push(client, PROJECT, tmp_path, pattern="*.png")
+
+		assert result.status == "skipped_exists"
+		assert upload_posts(api) == []
+		assert len(client.list_uploaded_files(PROJECT)) == 1
+
+	def test_two_files_the_server_would_store_under_one_name_do_not_both_go_up(self, api, client, tmp_path):
+		"""The listing is taken once per push, so after an upload it has to be taken again, or the second file misses the first under the name the server gave it and adds a copy."""
+		(tmp_path / "report 1.pdf").write_bytes(b"%PDF first")
+		(tmp_path / "report (1).pdf").write_bytes(b"%PDF second, longer")
+
+		results = push(client, PROJECT, tmp_path, pattern="*.pdf")
+
+		# The parenthesized name sorts first, goes up, and is stored without them; whichever order, one is created and the other finds it.
+		assert sorted(statuses(results).values()) == ["created", "skipped_exists"]
+		assert [upload.file_name for upload in client.list_uploaded_files(PROJECT)] == ["report 1.pdf"]
+
+	def test_a_dry_run_lists_the_files_once(self, api, client, tmp_path):
+		"""The preview already fetched the listing for its refusal wording; the upload path must reuse it rather than ask again."""
+		(tmp_path / "report.pdf").write_bytes(b"%PDF report")
+
+		push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(dry_run=True))
+
+		assert len([path for _, path in api.log if path.endswith("/files")]) == 1
+
+	def test_a_dry_run_reports_an_upload_without_sending_it(self, api, client, tmp_path):
+		api.add_upload(PROJECT, "old.pdf", b"%PDF old")
+		(tmp_path / "old.pdf").write_bytes(b"%PDF changed")
+		(tmp_path / "new.pdf").write_bytes(b"%PDF new")
+
+		results = push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(overwrite=True, dry_run=True))
+
+		assert statuses(results) == {"new.pdf": "created", "old.pdf": "replaced"}
+		assert upload_posts(api) == []
+		for result in results:
+			assert result.detail is not None and "dry run" in result.detail
+			assert result.warning is not None and "not previewed" in result.warning
+
+	def test_an_upload_past_capacity_stops_the_push(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		(tmp_path / "a.pdf").write_bytes(b"%PDF" + b"a" * 100)
+		(tmp_path / "b.md").write_text("after", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, pattern="*")
+
+		assert statuses(results) == {"a.pdf": "refused_full", "b.md": "skipped_full"}
+		assert results[0].kind == "upload"
+		assert client.list_uploaded_files(PROJECT) == []
+		assert results[0].warning is not None and "search threshold" in results[0].warning
+
+	def test_an_unavailable_files_listing_makes_the_upload_an_error_and_leaves_the_documents_alone(self, api, client, tmp_path):
+		"""Without the listing there is no telling whether the upload already exists, and pushing blind would mint a duplicate."""
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF report")
+		api.fail_once("GET", "/files$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		results = push(client, PROJECT, tmp_path, pattern="*")
+
+		assert statuses(results) == {"notes.md": "created", "report.pdf": "error"}
+		assert "could not be listed" in results[1].detail
+		assert upload_posts(api) == []
+
+	def test_the_files_listing_is_fetched_only_when_an_upload_is_pushed(self, api, client, tmp_path):
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+
+		push(client, PROJECT, tmp_path)
+
+		assert not [path for _, path in api.log if path.endswith("/files")]
+
+	def test_a_pull_and_push_copies_documents_and_pdfs_between_projects(self, api, client, tmp_path):
+		"""The migration the README promises: everything a pull brings down, a push sends on, images aside."""
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.add_upload(PROJECT, "report.pdf", b"%PDF report", page_count=3)
+		api.add_project("organization-1", "project-2", name="copy")
+
+		pull(client, PROJECT, tmp_path)
+		results = push(client, "project-2", tmp_path, pattern="*")
+
+		assert statuses(results) == {"notes.md": "created", "report.pdf": "created"}
+		assert api.content_of("project-2", "notes.md") == ["hello"]
+		[upload] = client.list_uploaded_files("project-2")
+		assert client.download_uploaded_file(upload) == b"%PDF report"

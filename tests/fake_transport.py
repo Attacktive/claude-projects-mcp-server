@@ -25,6 +25,8 @@ _DOCUMENTS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<p
 _DOCUMENT = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/docs/(?P<document>[^/]+)$")
 _KNOWLEDGE_STATS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/kb/stats$")
 _FILES = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/files$")
+# Where the web UI POSTs a file it adds to a project's knowledge (captured 2026-09-26), as multipart form data rather than JSON.
+_UPLOAD = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/upload$")
 # The download URL the files listing hands out (observed 2026-09-18): host-relative, outside the project path, and starting with the `/api` that the base URL already ends with.
 _FILE_ASSET = re.compile(r"^/api/(?P<organization>[^/]+)/files/(?P<file>[^/]+)/(?P<variant>[^/]+)$")
 _SCHEDULED_TASKS = re.compile(r"^/organizations/(?P<organization>[^/]+)/cowork/scheduled_tasks$")
@@ -57,6 +59,8 @@ class FakeClaudeProjectsApi:
 		self.unlisted_knowledge: dict[str, int] = {}
 		self.scheduled_tasks: dict[str, dict] = {}
 		self.log: list[tuple[str, str]] = []
+		# The JSON body of each logged request, or None for one without, in the same order as `log`.
+		self.bodies: list[Any] = []
 		self.closed = False
 
 		self._faults: list[tuple[str, re.Pattern, Exception]] = []
@@ -176,11 +180,15 @@ class FakeClaudeProjectsApi:
 	def methods_logged(self) -> list[str]:
 		return [method for method, _ in self.log]
 
+	def bodies_logged(self) -> list[Any]:
+		return list(self.bodies)
+
 	# -------------------------------------------------------------- transport
 
 	def request(self, method: str, path: str, *, json_body: dict | None = None) -> Any:
 		method = method.upper()
 		self.log.append((method, path))
+		self.bodies.append(json_body)
 		self._maybe_fail(method, path)
 
 		route, _, query = path.partition("?")
@@ -199,12 +207,13 @@ class FakeClaudeProjectsApi:
 			return self._patch(path, json_body or {})
 
 		if method == "DELETE":
-			return self._delete(path)
+			return self._delete(path, json_body)
 
 		raise ApiError(f"FakeClaudeProjectsApi has no route for {method} {path}", status=405)
 
 	def request_bytes(self, url: str) -> bytes:
 		self.log.append(("GET", url))
+		self.bodies.append(None)
 		self._maybe_fail("GET", url)
 
 		match = _FILE_ASSET.match(url)
@@ -221,6 +230,31 @@ class FakeClaudeProjectsApi:
 					return upload["_data"]
 
 		raise NotFoundError(f"No uploaded file {match['file']}")
+
+	def upload_file(self, path: str, *, file_name: str, data: bytes, content_type: str) -> Any:
+		"""Take a file the way the upload endpoint does (captured 2026-09-26) and answer with the row the files listing will show for it.
+
+		The real server answered that capture with the listing row plus a `highres_copy` block nothing here reads, so the fake answers with the row alone.
+		The name it stores is not always the name it was sent: `Coffeevore (scaled).png` was listed as `Coffeevore scaled.png`, so the fake drops parentheses too; whatever else the real sanitizing does is unobserved.
+		Only PDFs and images have been seen kept as uploads, so a PDF becomes a document upload with an original and anything else an image with renditions; what the real server makes of another kind is unknown.
+		"""
+		self.log.append(("POST", path))
+		self.bodies.append(None)
+		self._maybe_fail("POST", path)
+
+		match = _UPLOAD.match(path)
+		if not match:
+			raise ApiError(f"FakeClaudeProjectsApi has no route for POST {path} as an upload", status=404)
+
+		self._find_project(match["project"])
+		if content_type == "application/pdf":
+			file_kind = "document"
+		else:
+			file_kind = "image"
+
+		uuid = self.add_upload(match["project"], file_name.replace("(", "").replace(")", ""), data, file_kind=file_kind)
+		[upload] = [upload for upload in self.uploads[match["project"]] if upload["uuid"] == uuid]
+		return self._public_upload(upload, match["organization"])
 
 	def close(self) -> None:
 		self.closed = True
@@ -346,7 +380,7 @@ class FakeClaudeProjectsApi:
 		task["updated_at"] = self._stamp()
 		return {"trigger": self._public_task(task)}
 
-	def _delete(self, path: str) -> Any:
+	def _delete(self, path: str, body: dict | None) -> Any:
 		match = _SCHEDULED_TASK.match(path)
 		if match:
 			task = self._find_task(match["task"])
@@ -366,8 +400,23 @@ class FakeClaudeProjectsApi:
 		if not match:
 			raise ApiError(f"FakeClaudeProjectsApi has no route for DELETE {path}", status=404)
 
+		upload = self._find_upload(match["project"], match["document"])
+		if upload is not None:
+			return self._delete_upload(match["project"], upload, body)
+
 		document = self._find_document(match["project"], match["document"])
 		self.documents[match["project"]].remove(document)
+		return None
+
+	def _delete_upload(self, project_uuid: str, upload: dict, body: dict | None) -> None:
+		"""Remove an upload the way the web UI does (captured 2026-09-26): through the documents route, with `{"docUuid": uuid}` as the body.
+
+		Whether the real server needs that body is unknown, so the fake holds the client to the capture rather than to a guess.
+		"""
+		if body != {"docUuid": upload["uuid"]}:
+			raise ApiError(f"DELETE of an upload must carry {{'docUuid': uuid}} as the web UI does, got {body!r}", status=400)
+
+		self.uploads[project_uuid].remove(upload)
 		return None
 
 	def _projects_page(self, organization_uuid: str, parameters: dict[str, str]) -> dict:
@@ -443,6 +492,13 @@ class FakeClaudeProjectsApi:
 			raise NotFoundError(f"No scheduled task {task_id}")
 
 		return self.scheduled_tasks[task_id]
+
+	def _find_upload(self, project_uuid: str, upload_uuid: str) -> dict | None:
+		for upload in self.uploads.get(project_uuid, []):
+			if upload["uuid"] == upload_uuid:
+				return upload
+
+		return None
 
 	def _find_document(self, project_uuid: str, document_uuid: str) -> dict:
 		for document in self.documents.get(project_uuid, []):

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .capacity import Verdict, admits, candidates, judge, line_of, refusal, tokens_of
-from .errors import AmbiguousDocError, ApiError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, KnowledgeFullError, NotFoundError, RateLimitedError
+from .errors import AmbiguousDocError, ApiError, BackupError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, KnowledgeFullError, NotFoundError, RateLimitedError
 from .identifiers import chat_project_id
 from .models import Document, KnowledgeStats, Organization, Project, ScheduledTask, UploadedFile
 from .transport import HttpMethod, Transport
@@ -366,6 +366,108 @@ class ClaudeProjectsClient:
 
 		return data
 
+	def upload_file(
+		self,
+		project_id: str,
+		file_name: str,
+		data: bytes,
+		content_type: str,
+		replacing: list[UploadedFile] | None = None,
+		allow_search_mode: bool = False,
+		backup: Callable[[str, bytes], str] | None = None,
+	) -> ReplaceResult:
+		"""Send a file the way the web UI adds one to a project's knowledge (captured 2026-09-26), gated the way `save_document` is: back up `replacing[0]` if any, upload, measure, keep or revert, then remove what it replaced.
+
+		The API reports no token count for an upload, so what it adds is measured as the change in the knowledge size across the upload.
+		What `replacing` holds cannot be measured without deleting it, so it counts as nothing freed: a replacement near a line can be refused that would have fit once the old copy was gone.
+		The result's `file_name` is the name the server kept, which is not always the one sent: `Coffeevore (scaled).png` came back as `Coffeevore scaled.png`.
+		`backup` receives (file_name, old_bytes) and returns where it was saved; if it raises before the upload, nothing is mutated.
+		"""
+		if replacing is None:
+			replacing = []
+
+		backup_path = self._backup_before_upload(replacing, backup)
+		before, _ = self.try_knowledge_stats(project_id)
+		path = self._upload_path(project_id)
+		raw = self._retrying(lambda: self._transport.upload_file(path, file_name=file_name, data=data, content_type=content_type))
+		created = UploadedFile.parse(raw)
+		after, _ = self.try_knowledge_stats(project_id)
+
+		if before is None or after is None:
+			return self._unchecked_upload(project_id, created, replacing, backup_path)
+
+		# A teammate removing something meanwhile would read as a shrinking upload; nothing added is the floor.
+		added = max(after.size - before.size, 0)
+		if added == 0:
+			# A count that did not move cannot be told from one not yet updated, so this is unmeasured rather than a fit; whether the size reflects an upload at once is unverified, and the live canary asserts that it grows.
+			return self._unchecked_upload(project_id, created, replacing, backup_path)
+
+		verdict = judge(after, added, 0)
+		if not admits(verdict, allow_search_mode):
+			return self._revert_upload_or_raise(project_id, created, after, added, verdict, backup_path)
+
+		replaced, failed = self._delete_uploads(project_id, replacing)
+		# `after` still counts what the replaced copies held, since the API never said what that was; it overstates the size after a replacement and is exact otherwise.
+		return ReplaceResult(
+			uuid=created.uuid,
+			file_name=created.file_name,
+			replaced_uuids=replaced,
+			failed_delete_uuids=failed,
+			backup_path=backup_path,
+			knowledge=after,
+			entered_search_mode=(verdict == "search_mode") and allow_search_mode,
+		)
+
+	def delete_uploaded_file(self, project_id: str, upload_uuid: str) -> bool:
+		"""True if this call removed it, False if it was already gone.
+
+		The web UI removes an upload through the documents route, `DELETE .../docs/{uuid}`, with the uuid repeated in a `docUuid` body (captured 2026-09-26).
+		The body goes along because whether the server needs it is unknown, and a request shaped like the capture is the one known to work.
+		"""
+		try:
+			self._request("DELETE", f"{self._documents_path(project_id)}/{upload_uuid}", {"docUuid": upload_uuid})
+		except NotFoundError:
+			return False
+
+		return True
+
+	def _upload_path(self, project_id: str) -> str:
+		organization_id = self.resolve_organization_for_project(project_id)
+		return f"/organizations/{organization_id}/projects/{project_id}/upload"
+
+	def _unchecked_upload(self, project_id: str, created: UploadedFile, replacing: list[UploadedFile], backup_path: str | None) -> ReplaceResult:
+		"""The result of an upload whose cost could not be measured, kept as the document path keeps one, with `knowledge` left None so nobody reads a verdict into it."""
+		replaced, failed = self._delete_uploads(project_id, replacing)
+		return ReplaceResult(uuid=created.uuid, file_name=created.file_name, replaced_uuids=replaced, failed_delete_uuids=failed, backup_path=backup_path, knowledge=None)
+
+	def _backup_before_upload(self, replacing: list[UploadedFile], backup: Callable[[str, bytes], str] | None) -> str | None:
+		"""Save the newest copy an upload replaces when a backup is wanted, refusing if any copy offers no original, since every copy is deleted afterward.
+
+		A caller passing no `backup` has opted out of saving, as with documents, and then nothing here stands between the replacement and the old copies.
+		Only the newest is saved, as a replaced document's newest copy is; the README names that gap.
+		"""
+		if not replacing or backup is None:
+			return None
+
+		for copy in replacing:
+			if copy.download_url is None:
+				raise BackupError(f"{copy.file_name!r} ({copy.uuid}) cannot be replaced from here: it has no downloadable original to back up first, since only a document such as a PDF offers one. Remove it in the web UI if it should go.")
+
+		previous = replacing[0]
+		return backup(previous.file_name, self.download_uploaded_file(previous))
+
+	def _delete_uploads(self, project_id: str, uploads: list[UploadedFile]) -> tuple[list[str], list[str]]:
+		"""Delete each upload, returning which uuids went and which would not; by now the replacement is live, so a failure is a leftover, not a lost write."""
+		return _delete_each([upload.uuid for upload in uploads], lambda uuid: self.delete_uploaded_file(project_id, uuid))
+
+	def _revert_upload_or_raise(self, project_id: str, created: UploadedFile, stats: KnowledgeStats, added: int, verdict: Verdict, backup_path: str | None) -> ReplaceResult:
+		try:
+			self.delete_uploaded_file(project_id, created.uuid)
+		except Exception:
+			return ReplaceResult(uuid=created.uuid, file_name=created.file_name, backup_path=backup_path, knowledge=stats, rollback_failed=True)
+
+		raise self._refusal(project_id, created.file_name, stats, added, 0, verdict)
+
 	def get_document(self, project_id: str, document_uuid: str) -> Document:
 		raw = self._request("GET", f"{self._documents_path(project_id)}/{document_uuid}")
 		return Document.parse(raw)
@@ -583,15 +685,7 @@ class ClaudeProjectsClient:
 
 		By the time this runs the replacement content is already live, so a failed delete is a leftover duplicate, not a lost write; it is reported rather than raised.
 		"""
-		deleted, failed = [], []
-		for document in documents:
-			try:
-				self.delete_document(project_id, document.uuid)
-				deleted.append(document.uuid)
-			except Exception:
-				failed.append(document.uuid)
-
-		return deleted, failed
+		return _delete_each([document.uuid for document in documents], lambda uuid: self.delete_document(project_id, uuid))
 
 	def try_knowledge_stats(self, project_id: str) -> tuple[KnowledgeStats | None, ClaudeProjectsError | None]:
 		"""The project's knowledge stats, or None with the failure, for callers that carry on without a capacity check and say why rather than fail."""
@@ -697,15 +791,24 @@ class ClaudeProjectsClient:
 				rollback_failed=True,
 			)
 
-		existing_documents = self.list_documents(context.project_id)
-		candidates_list = candidates(existing_documents, excluding=context.file_name)
-		# A failed listing only costs the refusal a sentence, so it must not replace the refusal with a different error.
-		uploads, _ = self.try_list_uploaded_files(context.project_id)
-		projected = context.stats.size - removed
-		_, limit_value = line_of(context.stats, verdict)
+		raise self._refusal(context.project_id, context.file_name, context.stats, added, removed, verdict)
 
-		message = refusal(context.file_name, verdict, context.stats, added, removed, candidates_list, uploads)
-		raise KnowledgeFullError(message, file_name=context.file_name, verdict=verdict, projected=projected, limit=limit_value)
+	def _refusal(self, project_id: str, file_name: str, stats: KnowledgeStats, added: int, removed: int, verdict: Verdict) -> KnowledgeFullError:
+		"""The error a reverted write is refused with, naming what could be compacted to make room.
+
+		Either listing failing only costs the refusal a sentence, so neither may replace the refusal with a different error: a push that met one would carry on into a full project.
+		"""
+		try:
+			candidates_list = candidates(self.list_documents(project_id), excluding=file_name)
+		except ClaudeProjectsError:
+			candidates_list = None
+
+		uploads, _ = self.try_list_uploaded_files(project_id)
+		projected = stats.size - removed
+		_, limit_value = line_of(stats, verdict)
+
+		message = refusal(file_name, verdict, stats, added, removed, candidates_list, uploads)
+		return KnowledgeFullError(message, file_name=file_name, verdict=verdict, projected=projected, limit=limit_value)
 
 	def replace_document(
 		self,
@@ -814,6 +917,19 @@ class ClaudeProjectsClient:
 			failed_delete_uuids=failed,
 			backup_paths=backup_paths,
 		)
+
+
+def _delete_each(uuids: list[str], delete: Callable[[str], object]) -> tuple[list[str], list[str]]:
+	"""Run `delete` over each uuid, returning which went and which would not, since by the time anything is deleted the replacement is live and a failure is a leftover rather than a lost write."""
+	deleted, failed = [], []
+	for uuid in uuids:
+		try:
+			delete(uuid)
+			deleted.append(uuid)
+		except Exception:
+			failed.append(uuid)
+
+	return deleted, failed
 
 
 class _Dated(Protocol):

@@ -9,6 +9,7 @@ The project and document shapes were captured on 2026-08-06 by two one-off probe
 The scheduled-task shapes were captured on 2026-08-08 by driving claude.ai in a browser and reading the network log, which is the only way to see a payload the client cannot yet build a request for.
 Both sets were scrubbed the same way; the scheduled-task ones also had a ~56 KB server-generated `custom_system_prompt` replaced, since nothing parses it and committing it would triple the fixture for no coverage.
 The files-listing rows were captured the browser way too: the two PDFs on 2026-09-18 and the image on 2026-09-26, from a throwaway project holding one PNG.
+The upload response was captured the same way on 2026-09-26, from adding a second PNG to that project.
 
 Refreshing the shapes means writing a small probe again: `client.py` is the complete map of the endpoints and payloads it would need, and every leaf string must be replaced before saving, as above.
 
@@ -91,6 +92,15 @@ class TestRealResponsesParse:
 		assert documents and all(upload.download_url and upload.page_count for upload in documents), "a document upload offers its original and counts its pages"
 		assert images and all(upload.download_url is None and upload.page_count is None for upload in images), "an image offers renditions only, and has no pages"
 
+	def test_upload_response(self):
+		"""The reply to an upload parses as the listing row it is, so `upload_file` needs no parser of its own."""
+		upload = UploadedFile.parse(load("upload_response"))
+
+		assert upload.uuid and upload.file_name
+		assert upload.file_kind == "image"
+		assert upload.size_bytes == 124702
+		assert upload.download_url is None
+
 	def test_scheduled_tasks_list(self):
 		tasks = ScheduledTask.parse_list(load("scheduled_tasks_list"))
 
@@ -155,6 +165,12 @@ class TestFakeMatchesReality:
 		assert keys_of(listing) <= keys_of(uploads_of_kind("image")), "rows"
 		assert set(listing[0]["preview_asset"]) <= set(uploads_of_kind("image")[0]["preview_asset"]), "preview_asset"
 
+	def test_upload_response_fields_exist_upstream(self, api):
+		created = api.upload_file("/organizations/organization-1/projects/project-1/upload", file_name="photo.png", data=b"\x89PNG", content_type="image/png")
+
+		assert keys_of(created) <= keys_of(load("upload_response")), "row"
+		assert set(created["preview_asset"]) <= set(load("upload_response")["preview_asset"]), "preview_asset"
+
 	def test_created_project_fields_exist_upstream(self, api):
 		created = api.request("POST", "/organizations/organization-1/projects", json_body={"name": "x", "description": ""})
 
@@ -218,6 +234,7 @@ class TestObservedContract:
 		assert {"uuid", "file_name", "content"} <= keys_of(load("document_detail"))
 		assert {"uuid", "file_uuid", "file_name", "size_bytes"} <= keys_of(load("files_list"))
 		assert {"document_asset"} <= keys_of(uploads_of_kind("document"))
+		assert {"uuid", "file_uuid", "file_name", "file_kind"} <= keys_of(load("upload_response"))
 
 	def test_an_upload_carries_no_token_count(self):
 		"""Why the knowledge-size shortfall cannot be attributed upload by upload: the listing knows pages and bytes, never tokens."""
@@ -238,6 +255,15 @@ class TestObservedContract:
 			assert upload["preview_asset"]["file_variant"] == "preview"
 			assert upload["thumbnail_asset"]["file_variant"] == "thumbnail"
 			assert isinstance(upload["size_bytes"], int)
+
+	def test_an_upload_answers_with_the_row_the_files_listing_will_show(self):
+		"""Observed 2026-09-26: the upload response carries every key of the listing's image row, plus a `highres_copy` block that nothing here reads, so the listing shape is the one contract to track."""
+		response = load("upload_response")
+
+		for row in uploads_of_kind("image"):
+			assert set(row) <= set(response)
+
+		assert set(response) - keys_of(uploads_of_kind("image")) == {"highres_copy"}
 
 	def test_a_paused_task_omits_enabled_rather_than_sending_false(self):
 		"""The single most misleading thing about this API.

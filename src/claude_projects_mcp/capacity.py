@@ -181,14 +181,16 @@ def refusal(
 	stats: KnowledgeStats,
 	added: int,
 	removed: int,
-	candidates_list: list[Candidate],
+	candidates_list: list[Candidate] | None,
 	uploads: list[UploadedFile] | None,
 ) -> str:
 	"""Format the refusal message for the model when a write exceeds search threshold or maximum size.
 
-	`uploads` is what the files listing held, or `None` when it could not be fetched.
+	`candidates_list` is what the documents listing offered to compact, or `None` when it could not be fetched; `uploads` is the same for the files listing.
 	"""
-	if not candidates_list:
+	if candidates_list is None:
+		candidates_sentence = "The project's documents could not be listed, so nothing is named here to compact; shrink this content."
+	elif not candidates_list:
 		candidates_sentence = "There is no other document to compact; shrink this content."
 	else:
 		formatted_candidates = [_format_candidate(candidate) for candidate in candidates_list]

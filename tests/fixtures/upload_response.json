@@ -1,0 +1,35 @@
+{
+	"success": true,
+	"path": null,
+	"sanitized_name": null,
+	"file_kind": "image",
+	"file_uuid": "<str>",
+	"file_name": "<redacted>",
+	"created_at": "<str>",
+	"user_uuid": null,
+	"size_bytes": 124702,
+	"thumbnail_url": "/api/<str>/files/<str>/thumbnail",
+	"preview_url": "/api/<str>/files/<str>/preview",
+	"thumbnail_asset": {
+		"url": "/api/<str>/files/<str>/thumbnail",
+		"file_variant": "thumbnail",
+		"primary_color": "<str>",
+		"image_width": 400,
+		"image_height": 225
+	},
+	"preview_asset": {
+		"url": "/api/<str>/files/<str>/preview",
+		"file_variant": "preview",
+		"primary_color": "<str>",
+		"image_width": 1456,
+		"image_height": 819
+	},
+	"highres_copy": {
+		"max_px": 2576,
+		"max_tokens": 4784,
+		"px_per_token": 28,
+		"jpeg_quality": 75,
+		"resized": false
+	},
+	"uuid": "<str>"
+}

@@ -3,10 +3,12 @@
 Skipped unless CLAUDE_PROJECTS_LIVE_TESTS=1.
 Run it by hand when something breaks: it is the fastest way to tell "claude.ai changed" apart from "we have a bug", because it exercises the real endpoints end to end and nothing else in the suite touches the network.
 
-The document and project it creates have unmistakable names and are deleted in finally blocks, so a failure mid-test leaves at most one obvious stray behind.
+The document, project, and upload it creates have unmistakable names and are deleted in finally blocks, so a failure mid-test leaves at most one obvious stray behind.
 """
 
 import os
+import struct
+import zlib
 from collections.abc import Callable
 
 import pytest
@@ -23,6 +25,7 @@ CONTRACT_DOCUMENT = "__claude_projects_mcp_contract_test__.md"
 CONTRACT_PROJECT = "__claude_projects_mcp_contract_test_project__"
 DOCUMENT_HOST_PROJECT = "__claude_projects_mcp_contract_test_docs__"
 CONTRACT_TASK = "__claude_projects_mcp_contract_test_task__"
+CONTRACT_UPLOAD = "__claude_projects_mcp_contract_test__.png"
 
 # Monday at midnight UTC: days away whatever day this runs, so a task deleted moments later can never have fired.
 CONTRACT_CRON = "0 0 * * 1"
@@ -275,6 +278,53 @@ def test_an_image_upload_offers_no_original(client):
 
 	assert upload.download_url is None, "an image began offering an original, so pull_documents and delete_project could stop refusing it"
 	assert upload.page_count is None, "pages are a document's; an image never had any"
+
+
+@skip_unless_live
+def test_an_upload_round_trips(client, project):
+	"""Add a PNG the way the web UI does, see it listed, then remove it the way the web UI does (both captured 2026-09-26).
+
+	A PNG because that is the kind the capture carried.
+	A PDF through this path would prove the download side of a push too, and is worth adding once one has been seen going through.
+	"""
+	data = _tiny_png()
+	created = None
+	try:
+		before = client.knowledge_stats(project)
+		result = client.upload_file(project, CONTRACT_UPLOAD, data, "image/png")
+		created = result.uuid
+		assert result.action == "created"
+		assert result.file_name == CONTRACT_UPLOAD, "the server renamed a plain file name; push_documents matches by name and needs to know the rule"
+		assert result.knowledge is not None and result.knowledge.size > before.size, "the knowledge size did not grow across the upload, so either the count lags the reply and the capacity gate cannot see an upload's cost, or an image this size costs nothing"
+
+		[upload] = client.list_uploaded_files(project)
+		assert upload.uuid == created
+		assert upload.file_kind == "image"
+		assert upload.size_bytes == len(data), "size_bytes should be the byte count of what was sent"
+
+		assert client.delete_uploaded_file(project, created) is True
+		created = None
+		assert client.list_uploaded_files(project) == [], "the delete answered but the upload is still listed"
+	finally:
+		if created is not None:
+			client.delete_uploaded_file(project, created)
+
+
+def _tiny_png() -> bytes:
+	"""A gray PNG of 112 by 112 pixels, built here rather than pasted so what goes up is plain to see.
+
+	Large enough to cost a few tokens by any plausible rule, since the 49 by 50 PNG observed on 2026-09-26 cost 4, so the size check above has something to see.
+	"""
+
+	def chunk(kind: bytes, body: bytes) -> bytes:
+		return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+	side = 112
+	# Width, height, bit depth, color type (RGBA), compression, filter, interlace.
+	header = struct.pack(">IIBBBBB", side, side, 8, 6, 0, 0, 0)
+	# Each row opens with a filter byte, then opaque gray pixels.
+	rows = (b"\x00" + b"\x80\x80\x80\xff" * side) * side
+	return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
 def _first_upload(client: ClaudeProjectsClient, wanted: Callable[[UploadedFile], bool]) -> UploadedFile | None:

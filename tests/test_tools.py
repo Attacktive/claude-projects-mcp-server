@@ -97,6 +97,14 @@ class TestRegistration:
 		"""The per-tool description says so too, but a model that read only the instructions would call the deletion safe and then meet an unexplained error."""
 		assert "cannot be backed up" in server.instructions
 
+	async def test_the_server_instructions_say_which_files_push_sends_as_uploads(self, server):
+		"""A model that read only the instructions would otherwise keep sending people to the web UI for a PDF, or push a spreadsheet and be surprised."""
+		assert "cannot write them" not in server.instructions
+		assert "a PDF or an image" in server.instructions
+		description = {tool.name: tool for tool in await server.list_tools()}["push_documents"].description
+		assert "a PDF or an image" in description
+		assert "*.md" in description, "a model calling with the default pattern would otherwise take the PDFs in the folder for pushed"
+
 
 class TestProjectResolution:
 	async def test_the_named_project_is_the_one_acted_on(self, api, server):
@@ -685,6 +693,25 @@ class TestPushDocs:
 		written = [path for path in (tmp_path / "trash").rglob("*") if path.is_file()]
 		assert len(written) == 1
 		assert written[0].read_text(encoding="utf-8") == "the old text"
+
+	async def test_a_replaced_upload_is_backed_up_as_bytes(self, api, server, tmp_path):
+		"""The bytes backup reaches push() through PushOptions, and nothing else covers that wire end to end."""
+		api.add_upload(PROJECT, "report.pdf", b"%PDF the old bytes")
+		source = tmp_path / "docs"
+		source.mkdir()
+		(source / "report.pdf").write_bytes(b"%PDF the new bytes")
+
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(source), pattern="*.pdf", overwrite=True)
+
+		assert result["summary"] == {"replaced": 1}
+		[row] = result["results"]
+		assert row["kind"] == "upload"
+		written = [path for path in (tmp_path / "trash").rglob("*") if path.is_file()]
+		assert len(written) == 1
+		assert written[0].read_bytes() == b"%PDF the old bytes"
+		assert row["backup_path"] == str(written[0])
+		[upload] = api.uploads[PROJECT]
+		assert upload["_data"] == b"%PDF the new bytes"
 
 	async def test_a_missing_directory_is_a_tool_error(self, server, tmp_path):
 		with pytest.raises(ToolError) as exception_info:

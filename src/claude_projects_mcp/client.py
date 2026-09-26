@@ -42,6 +42,18 @@ class _SaveContext:
 	backup_path: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class OutgoingFile:
+	"""A file on its way into a project's knowledge as an upload: the name it is sent under, its bytes, and the content type the upload request carries for it.
+
+	The three always travel together, from the push that reads the file down to the multipart form that carries it.
+	"""
+
+	file_name: str
+	data: bytes
+	content_type: str
+
+
 @dataclass
 class ReplaceResult:
 	"""What a save actually did, including the parts that did not go to plan."""
@@ -369,9 +381,7 @@ class ClaudeProjectsClient:
 	def upload_file(
 		self,
 		project_id: str,
-		file_name: str,
-		data: bytes,
-		content_type: str,
+		outgoing: OutgoingFile,
 		replacing: list[UploadedFile] | None = None,
 		allow_search_mode: bool = False,
 		backup: Callable[[str, bytes], str] | None = None,
@@ -389,7 +399,7 @@ class ClaudeProjectsClient:
 		backup_path = self._backup_before_upload(replacing, backup)
 		before, _ = self.try_knowledge_stats(project_id)
 		path = self._upload_path(project_id)
-		raw = self._retrying(lambda: self._transport.upload_file(path, file_name=file_name, data=data, content_type=content_type))
+		raw = self._retrying(lambda: self._transport.upload_file(path, file_name=outgoing.file_name, data=outgoing.data, content_type=outgoing.content_type))
 		created = UploadedFile.parse(raw)
 		after, _ = self.try_knowledge_stats(project_id)
 

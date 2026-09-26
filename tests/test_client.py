@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from claude_projects_mcp.client import ClaudeProjectsClient
+from claude_projects_mcp.client import ClaudeProjectsClient, OutgoingFile
 from claude_projects_mcp.errors import ApiError, BackupError, KnowledgeFullError, NotFoundError, RateLimitedError
 from claude_projects_mcp.models import UploadedFile
 
@@ -307,7 +307,7 @@ class TestUploadingFiles:
 	"""Sending a file the way the web UI adds one to a project's knowledge (captured 2026-09-26), and removing one the way it does too."""
 
 	def test_uploads_a_file_and_lists_it(self, api, client):
-		result = client.upload_file(PROJECT, "photo.png", b"\x89PNG\r\n", "image/png")
+		result = client.upload_file(PROJECT, OutgoingFile("photo.png", b"\x89PNG\r\n", "image/png"))
 
 		[upload] = client.list_uploaded_files(PROJECT)
 		assert result.uuid == upload.uuid
@@ -317,7 +317,7 @@ class TestUploadingFiles:
 		assert upload.size_bytes == len(b"\x89PNG\r\n")
 
 	def test_a_pdf_lists_as_a_document_upload_with_its_original(self, api, client):
-		client.upload_file(PROJECT, "report.pdf", b"%PDF-1.4 report", "application/pdf")
+		client.upload_file(PROJECT, OutgoingFile("report.pdf", b"%PDF-1.4 report", "application/pdf"))
 
 		[upload] = client.list_uploaded_files(PROJECT)
 		assert upload.file_kind == "document"
@@ -325,7 +325,7 @@ class TestUploadingFiles:
 
 	def test_the_name_the_server_kept_is_reported(self, api, client):
 		"""Observed 2026-09-26: a file sent as `Coffeevore (scaled).png` was listed as `Coffeevore scaled.png`, so the caller has to be told the stored name rather than assume its own."""
-		result = client.upload_file(PROJECT, "Coffeevore (scaled).png", b"\x89PNG", "image/png")
+		result = client.upload_file(PROJECT, OutgoingFile("Coffeevore (scaled).png", b"\x89PNG", "image/png"))
 
 		assert result.file_name == "Coffeevore scaled.png"
 		assert [upload.file_name for upload in client.list_uploaded_files(PROJECT)] == ["Coffeevore scaled.png"]
@@ -335,7 +335,7 @@ class TestUploadingFiles:
 		client = ClaudeProjectsClient(api, sleep=slept.append)
 		api.fail_once("POST", "/upload$", RateLimitedError("slow down", retry_after=1))
 
-		client.upload_file(PROJECT, "photo.png", b"\x89PNG", "image/png")
+		client.upload_file(PROJECT, OutgoingFile("photo.png", b"\x89PNG", "image/png"))
 
 		assert slept == [1]
 		assert len(client.list_uploaded_files(PROJECT)) == 1
@@ -363,7 +363,7 @@ class TestUploadingFiles:
 		api.projects[PROJECT]["_search_threshold"] = 50
 
 		with pytest.raises(KnowledgeFullError) as exception_info:
-			client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf")
+			client.upload_file(PROJECT, OutgoingFile("big.pdf", b"x" * 100, "application/pdf"))
 
 		assert "search threshold" in str(exception_info.value)
 		assert "'big.pdf'" in str(exception_info.value)
@@ -373,7 +373,7 @@ class TestUploadingFiles:
 	def test_an_upload_crossing_the_search_threshold_is_kept_when_search_mode_is_allowed(self, api, client):
 		api.projects[PROJECT]["_search_threshold"] = 50
 
-		result = client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf", allow_search_mode=True)
+		result = client.upload_file(PROJECT, OutgoingFile("big.pdf", b"x" * 100, "application/pdf"), allow_search_mode=True)
 
 		assert result.entered_search_mode is True
 		assert len(client.list_uploaded_files(PROJECT)) == 1
@@ -382,7 +382,7 @@ class TestUploadingFiles:
 		api.projects[PROJECT]["_max_knowledge_size"] = 50
 
 		with pytest.raises(KnowledgeFullError) as exception_info:
-			client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf", allow_search_mode=True)
+			client.upload_file(PROJECT, OutgoingFile("big.pdf", b"x" * 100, "application/pdf"), allow_search_mode=True)
 
 		assert "maximum" in str(exception_info.value)
 		assert client.list_uploaded_files(PROJECT) == []
@@ -393,7 +393,7 @@ class TestUploadingFiles:
 		api.fail_once("GET", "/docs$", ApiError("claude.ai returned HTTP 500.", status=500))
 
 		with pytest.raises(KnowledgeFullError) as exception_info:
-			client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf")
+			client.upload_file(PROJECT, OutgoingFile("big.pdf", b"x" * 100, "application/pdf"))
 
 		assert "could not be listed" in str(exception_info.value)
 		assert client.list_uploaded_files(PROJECT) == []
@@ -402,7 +402,7 @@ class TestUploadingFiles:
 		api.projects[PROJECT]["_search_threshold"] = 50
 		api.fail_once("DELETE", "/docs/", ApiError("claude.ai returned HTTP 500.", status=500))
 
-		result = client.upload_file(PROJECT, "big.pdf", b"x" * 100, "application/pdf")
+		result = client.upload_file(PROJECT, OutgoingFile("big.pdf", b"x" * 100, "application/pdf"))
 
 		assert result.rollback_failed is True
 		assert len(client.list_uploaded_files(PROJECT)) == 1
@@ -410,7 +410,7 @@ class TestUploadingFiles:
 	def test_without_knowledge_stats_an_upload_goes_through_unchecked(self, api, client):
 		api.projects[PROJECT]["_search_threshold"] = None
 
-		result = client.upload_file(PROJECT, "photo.png", b"\x89PNG", "image/png")
+		result = client.upload_file(PROJECT, OutgoingFile("photo.png", b"\x89PNG", "image/png"))
 
 		assert result.knowledge is None
 		assert len(client.list_uploaded_files(PROJECT)) == 1
@@ -420,7 +420,7 @@ class TestUploadingFiles:
 		api.projects[PROJECT]["_max_knowledge_size"] = 50
 		api.add_document(PROJECT, "full.md", "x" * 60)
 
-		result = client.upload_file(PROJECT, "empty.pdf", b"", "application/pdf")
+		result = client.upload_file(PROJECT, OutgoingFile("empty.pdf", b"", "application/pdf"))
 
 		assert result.knowledge is None
 		assert len(client.list_uploaded_files(PROJECT)) == 1
@@ -434,7 +434,7 @@ class TestUploadingFiles:
 			saved.append((file_name, data, api.methods_logged().count("POST")))
 			return f"/backups/{file_name}"
 
-		result = client.upload_file(PROJECT, "report.pdf", b"%PDF new", "application/pdf", replacing=[old], backup=backup)
+		result = client.upload_file(PROJECT, OutgoingFile("report.pdf", b"%PDF new", "application/pdf"), replacing=[old], backup=backup)
 
 		assert saved == [("report.pdf", b"%PDF old", 0)], "backed up before anything was sent"
 		assert result.action == "replaced"
@@ -452,7 +452,7 @@ class TestUploadingFiles:
 			raise BackupError("disk full")
 
 		with pytest.raises(BackupError):
-			client.upload_file(PROJECT, "report.pdf", b"%PDF new", "application/pdf", replacing=[old], backup=backup)
+			client.upload_file(PROJECT, OutgoingFile("report.pdf", b"%PDF new", "application/pdf"), replacing=[old], backup=backup)
 
 		assert "POST" not in api.methods_logged()
 		assert [upload.uuid for upload in client.list_uploaded_files(PROJECT)] == [old.uuid]
@@ -463,7 +463,7 @@ class TestUploadingFiles:
 		[old] = client.list_uploaded_files(PROJECT)
 
 		with pytest.raises(BackupError) as exception_info:
-			client.upload_file(PROJECT, "photo.png", b"new png", "image/png", replacing=[old], backup=lambda file_name, data: "/backups/photo.png")
+			client.upload_file(PROJECT, OutgoingFile("photo.png", b"new png", "image/png"), replacing=[old], backup=lambda file_name, data: "/backups/photo.png")
 
 		assert "no downloadable original" in str(exception_info.value)
 		assert "POST" not in api.methods_logged()
@@ -477,7 +477,7 @@ class TestUploadingFiles:
 		assert copies[0].download_url is not None, "the newest copy is the one with an original"
 
 		with pytest.raises(BackupError) as exception_info:
-			client.upload_file(PROJECT, "chart.png", b"new png", "image/png", replacing=copies, backup=lambda file_name, data: "/backups/chart.png")
+			client.upload_file(PROJECT, OutgoingFile("chart.png", b"new png", "image/png"), replacing=copies, backup=lambda file_name, data: "/backups/chart.png")
 
 		assert "no downloadable original" in str(exception_info.value)
 		assert "POST" not in api.methods_logged()
@@ -488,7 +488,7 @@ class TestUploadingFiles:
 		[old] = client.list_uploaded_files(PROJECT)
 		api.fail_once("DELETE", f"/docs/{old_uuid}$", ApiError("claude.ai returned HTTP 500.", status=500))
 
-		result = client.upload_file(PROJECT, "report.pdf", b"%PDF new", "application/pdf", replacing=[old])
+		result = client.upload_file(PROJECT, OutgoingFile("report.pdf", b"%PDF new", "application/pdf"), replacing=[old])
 
 		assert result.replaced_uuids == []
 		assert result.failed_delete_uuids == [old_uuid]

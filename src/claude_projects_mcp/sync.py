@@ -18,7 +18,7 @@ from pathlib import Path, PurePath
 from typing import Self
 
 from .capacity import Verdict, admits, by_name, consequence, crossing, hint, judge, tokens_of, uploads_note
-from .client import ClaudeProjectsClient, ReplaceResult
+from .client import ClaudeProjectsClient, OutgoingFile, ReplaceResult
 from .errors import ClaudeProjectsError, InvalidPatternError, KnowledgeFullError
 from .filenames import deduplicate, safe_child, sanitize
 from .models import Document, KnowledgeStats, UploadedFile
@@ -615,35 +615,36 @@ def _push_existing(context: _PushContext, path: Path, name: str, content: str, c
 def _push_upload(context: _PushContext, path: Path, name: str, content_type: str) -> FileResult:
 	"""A PDF or an image, sent as an upload, under the same rules about when to write as a document: over bytes and the files listing rather than text and the documents listing."""
 	try:
-		data = path.read_bytes()
+		outgoing = OutgoingFile(name, path.read_bytes(), content_type)
 		copies = context.uploads.named(name)
 		if not copies:
-			return _push_new_upload(context, path, name, data, content_type)
+			return _push_new_upload(context, path, outgoing)
 
-		return _push_existing_upload(context, path, name, data, content_type, copies)
+		return _push_existing_upload(context, path, outgoing, copies)
 	except KnowledgeFullError as exception:
 		return FileResult(name, "refused_full", local_path=str(path), detail=str(exception), warning=str(exception), kind="upload")
 	except (ClaudeProjectsError, OSError) as exception:
 		return FileResult(name, "error", local_path=str(path), detail=str(exception), kind="upload")
 
 
-def _push_new_upload(context: _PushContext, path: Path, name: str, data: bytes, content_type: str) -> FileResult:
+def _push_new_upload(context: _PushContext, path: Path, outgoing: OutgoingFile) -> FileResult:
 	if context.preview is not None:
-		return context.preview.upload_result(name, path, "created")
+		return context.preview.upload_result(outgoing.file_name, path, "created")
 
-	result = context.client.upload_file(context.project_id, name, data, content_type, allow_search_mode=context.options.allow_search_mode)
+	result = context.client.upload_file(context.project_id, outgoing, allow_search_mode=context.options.allow_search_mode)
 	context.uploads.forget()
-	return _upload_row(path, name, "created", result, replacing=None)
+	return _upload_row(path, outgoing.file_name, "created", result, replacing=None)
 
 
-def _push_existing_upload(context: _PushContext, path: Path, name: str, data: bytes, content_type: str, copies: list[UploadedFile]) -> FileResult:
+def _push_existing_upload(context: _PushContext, path: Path, outgoing: OutgoingFile, copies: list[UploadedFile]) -> FileResult:
 	"""Compare against the newest copy; a replacement takes every copy with it, as a document's does."""
+	name = outgoing.file_name
 	existing = copies[0]
 	if existing.download_url is None:
 		# An image offers no original to compare against or to back up (observed 2026-09-26), so it can be neither called unchanged nor replaced, and the row must not promise that overwrite would help.
 		return FileResult(name, "skipped_exists", local_path=str(path), detail="an upload of this name is already in the project, and it offers no downloadable original to compare against or back up, so it is left as it is; remove it in the web UI to push this file", kind="upload")
 
-	if _same_bytes(context.client, existing, data):
+	if _same_bytes(context.client, existing, outgoing.data):
 		return FileResult(name, "unchanged", local_path=str(path), kind="upload")
 
 	if not context.options.overwrite:
@@ -654,9 +655,7 @@ def _push_existing_upload(context: _PushContext, path: Path, name: str, data: by
 
 	result = context.client.upload_file(
 		context.project_id,
-		name,
-		data,
-		content_type,
+		outgoing,
 		replacing=copies,
 		allow_search_mode=context.options.allow_search_mode,
 		backup=context.options.backup_bytes,

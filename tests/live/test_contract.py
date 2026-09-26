@@ -13,7 +13,7 @@ from collections.abc import Callable
 
 import pytest
 
-from claude_projects_mcp.client import ClaudeProjectsClient
+from claude_projects_mcp.client import ClaudeProjectsClient, OutgoingFile
 from claude_projects_mcp.config import Settings, load_env_file
 from claude_projects_mcp.errors import NotFoundError
 from claude_projects_mcp.models import UploadedFile
@@ -291,7 +291,7 @@ def test_an_upload_round_trips(client, project):
 	created = None
 	try:
 		before = client.knowledge_stats(project)
-		result = client.upload_file(project, CONTRACT_UPLOAD, data, "image/png")
+		result = client.upload_file(project, OutgoingFile(CONTRACT_UPLOAD, data, "image/png"))
 		created = result.uuid
 		assert result.action == "created"
 		assert result.file_name == CONTRACT_UPLOAD, "the server renamed a plain file name; push_documents matches by name and needs to know the rule"

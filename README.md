@@ -11,7 +11,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 497 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All seventeen tools are implemented and covered by 514 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
 Files uploaded through the web UI, such as PDFs, are listed, pulled, and backed up before a deletion; the listing and `pull_documents` have run against real PDFs, but the pre-delete backup of uploads has only run against the in-memory fake (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
@@ -48,7 +48,10 @@ Uploaded files (observed 2026-09-18) sit at `/organizations/{organization}/proje
   The transport resolves it against the origin rather than appending it, refuses any other origin so the session key never travels, reads the body as bytes rather than JSON, and rejects an HTML page served in its place, which is what a stale session gets.
   The client then checks the byte count against `size_bytes`, the one thing the listing says about the file's contents.
 - Only a `document_asset` whose `file_variant` is `original` counts as the file.
-  A PDF has one; an image has a preview and a thumbnail, which are renditions, so it is listed but can be neither pulled nor backed up.
+  A PDF has one; an image (observed 2026-09-26) has a `preview_asset` and a `thumbnail_asset`, which are renditions, and no `document_asset` key at all, so it is listed but can be neither pulled nor backed up.
+  That image accounted for a knowledge-size gap of 4 tokens, so an image counts toward the size, but barely.
+- An HTML file and a plain text file added through the web UI's knowledge upload (observed 2026-09-26) became text documents rather than uploads, the HTML one keeping its markup.
+  So only PDFs and images have appeared in a files listing so far.
 - Nothing here can upload one.
   The endpoint the web UI uses for that has not been observed, so `push_documents` carries text documents only.
 
@@ -62,9 +65,10 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
   Run the live suite with `CLAUDE_PROJECTS_LIVE_TESTS=1` against an account holding a PDF, then delete a throwaway project holding one and check the backup directory, before trusting a deletion with uploads in it.
 - Uploaded files cannot be written from here.
   Adding or replacing a PDF means the web UI until the upload endpoint is observed, and a pull-and-push copy therefore carries the documents only.
-- Uploads that are not documents cannot be read either.
-  An image offers only a preview and a thumbnail, neither of which is the file, so `pull_documents` reports it as an error and `delete_project` refuses until it is removed in the web UI; only a PDF has been observed so far, so what other kinds offer is unknown.
-  An upload that is itself an HTML file would be refused the same way, since the download path treats an HTML body as a login page served in place of the file.
+- Uploads other than PDFs cannot be read.
+  An image's row offers only a preview and a thumbnail (observed 2026-09-26), neither of which is the file, so `pull_documents` reports it as an error and `delete_project` refuses until it is removed in the web UI.
+  Which other kinds the web UI keeps as uploads, and whether they offer an original, is unknown: an HTML file and a plain text file became text documents instead, so only PDFs and images have been seen in a files listing.
+  The download path still treats an HTML body as a login page served in place of the file, which nothing observed contradicts.
 - Whether the files listing truncates is unknown.
   It is a bare array like the documents listing, so it cannot say "that is all of them", and `delete_project` now relies on it before an irreversible delete; a project with many uploads is the case to check.
 

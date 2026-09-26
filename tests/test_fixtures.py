@@ -8,6 +8,7 @@ The fixtures hold shapes only: every leaf string was replaced before they were s
 The project and document shapes were captured on 2026-08-06 by two one-off probes, neither of which survives — the scripts were deleted and the history that briefly held one of them was squashed away.
 The scheduled-task shapes were captured on 2026-08-08 by driving claude.ai in a browser and reading the network log, which is the only way to see a payload the client cannot yet build a request for.
 Both sets were scrubbed the same way; the scheduled-task ones also had a ~56 KB server-generated `custom_system_prompt` replaced, since nothing parses it and committing it would triple the fixture for no coverage.
+The files-listing rows were captured the browser way too: the two PDFs on 2026-09-18 and the image on 2026-09-26, from a throwaway project holding one PNG.
 
 Refreshing the shapes means writing a small probe again: `client.py` is the complete map of the endpoints and payloads it would need, and every leaf string must be replaced before saving, as above.
 
@@ -45,6 +46,14 @@ def keys_of(payload) -> set[str]:
 	return set(payload)
 
 
+def uploads_of_kind(kind: str) -> list[dict]:
+	"""The captured files-listing rows of one `file_kind`, which must exist or a check on that kind proves nothing."""
+	rows = [row for row in load("files_list") if row["file_kind"] == kind]
+	assert rows, f"the files capture must include a {kind} upload"
+
+	return rows
+
+
 class TestRealResponsesParse:
 	"""The parsers must accept what claude.ai actually sends, extra fields and all."""
 
@@ -75,8 +84,12 @@ class TestRealResponsesParse:
 
 	def test_files_list(self):
 		uploads = UploadedFile.parse_list(load("files_list"))
+		documents = [upload for upload in uploads if upload.file_kind == "document"]
+		images = [upload for upload in uploads if upload.file_kind == "image"]
 
-		assert uploads and all(upload.uuid and upload.file_name and upload.download_url for upload in uploads)
+		assert uploads and all(upload.uuid and upload.file_name for upload in uploads)
+		assert documents and all(upload.download_url and upload.page_count for upload in documents), "a document upload offers its original and counts its pages"
+		assert images and all(upload.download_url is None and upload.page_count is None for upload in images), "an image offers renditions only, and has no pages"
 
 	def test_scheduled_tasks_list(self):
 		tasks = ScheduledTask.parse_list(load("scheduled_tasks_list"))
@@ -131,8 +144,16 @@ class TestFakeMatchesReality:
 		api.add_upload("project-1", "report.pdf", b"%PDF-1.4", page_count=1)
 		listing = api.request("GET", "/organizations/organization-1/projects/project-1/files")
 
-		assert keys_of(listing) <= keys_of(load("files_list")), "rows"
-		assert set(listing[0]["document_asset"]) <= set(load("files_list")[0]["document_asset"]), "document_asset"
+		assert keys_of(listing) <= keys_of(uploads_of_kind("document")), "rows"
+		assert set(listing[0]["document_asset"]) <= set(uploads_of_kind("document")[0]["document_asset"]), "document_asset"
+
+	def test_uploaded_image_fields_exist_upstream(self, api):
+		"""An image row omits `document_asset` rather than sending it null (observed 2026-09-26), so the fake must not invent the key."""
+		api.add_upload("project-1", "photo.png", b"\x89PNG", file_kind="image")
+		listing = api.request("GET", "/organizations/organization-1/projects/project-1/files")
+
+		assert keys_of(listing) <= keys_of(uploads_of_kind("image")), "rows"
+		assert set(listing[0]["preview_asset"]) <= set(uploads_of_kind("image")[0]["preview_asset"]), "preview_asset"
 
 	def test_created_project_fields_exist_upstream(self, api):
 		created = api.request("POST", "/organizations/organization-1/projects", json_body={"name": "x", "description": ""})
@@ -195,19 +216,28 @@ class TestObservedContract:
 		assert {"uuid"} <= keys_of(load("projects_v2")["data"])
 		assert {"uuid", "file_name"} <= keys_of(load("documents_list"))
 		assert {"uuid", "file_name", "content"} <= keys_of(load("document_detail"))
-		assert {"uuid", "file_uuid", "file_name", "size_bytes", "document_asset"} <= keys_of(load("files_list"))
+		assert {"uuid", "file_uuid", "file_name", "size_bytes"} <= keys_of(load("files_list"))
+		assert {"document_asset"} <= keys_of(uploads_of_kind("document"))
 
 	def test_an_upload_carries_no_token_count(self):
 		"""Why the knowledge-size shortfall cannot be attributed upload by upload: the listing knows pages and bytes, never tokens."""
-		for upload in load("files_list"):
+		for upload in uploads_of_kind("document"):
 			assert upload["document_asset"]["token_count"] is None
 			assert isinstance(upload["document_asset"]["page_count"], int)
 
 	def test_an_upload_downloads_through_a_host_relative_url_carrying_the_api_prefix(self):
 		"""The asset URL is not under the project path, and it already starts with the `/api` the base URL ends with, so the transport must resolve it against the origin rather than append it."""
-		for upload in load("files_list"):
+		for upload in uploads_of_kind("document"):
 			assert upload["document_asset"]["url"].startswith("/api/")
 			assert "/projects/" not in upload["document_asset"]["url"]
+
+	def test_an_image_offers_renditions_but_no_original(self):
+		"""Observed 2026-09-26: an image row carries a preview and a thumbnail and no `document_asset` key at all, which is why an image is listed but can be neither pulled nor backed up."""
+		for upload in uploads_of_kind("image"):
+			assert "document_asset" not in upload
+			assert upload["preview_asset"]["file_variant"] == "preview"
+			assert upload["thumbnail_asset"]["file_variant"] == "thumbnail"
+			assert isinstance(upload["size_bytes"], int)
 
 	def test_a_paused_task_omits_enabled_rather_than_sending_false(self):
 		"""The single most misleading thing about this API.

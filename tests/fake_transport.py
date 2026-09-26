@@ -509,10 +509,10 @@ class FakeClaudeProjectsApi:
 		return public
 
 	def _public_upload(self, upload: dict, organization_uuid: str) -> dict:
-		"""An uploaded file shaped the way the files listing shapes one (observed 2026-09-18).
+		"""An uploaded file shaped the way the files listing shapes one, observed 2026-09-18 for PDFs and 2026-09-26 for an image.
 
 		A document's original sits under `document_asset`, and the listing never reports a token count, so nothing can add these up to the knowledge size.
-		Only PDFs were observed; the preview shape for any other kind is a guess kept as small as possible.
+		An image has a preview and a thumbnail instead, and its row omits `document_asset` rather than sending it null; the fake keeps the preview to the fields the parser looks at.
 		"""
 		public: dict[str, Any] = {
 			"uuid": upload["uuid"],
@@ -521,7 +521,6 @@ class FakeClaudeProjectsApi:
 			"file_kind": upload["file_kind"],
 			"created_at": upload["created_at"],
 			"preview_asset": None,
-			"document_asset": None,
 		}
 
 		if self.list_includes_sizes:

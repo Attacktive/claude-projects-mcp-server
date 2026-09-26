@@ -188,6 +188,7 @@ class UploadedFile:
 	"""A file uploaded through the web UI, which the documents endpoint never lists.
 
 	Observed 2026-09-18 at `/organizations/{organization}/projects/{uuid}/files`: a PDF counts toward the project's knowledge size but is a different kind of thing from a document — it has bytes and pages rather than content, and the listing reports no token count for it.
+	Observed 2026-09-26: an image is listed with a preview and a thumbnail and no `document_asset` at all, while an HTML or plain text file added through the web UI becomes a text document rather than an upload.
 	"""
 
 	uuid: str
@@ -197,7 +198,7 @@ class UploadedFile:
 	size_bytes: int | None = None
 	page_count: int | None = None
 	# Host-relative, as the API hands it out: it starts with the `/api` that the base URL already ends with, so the transport resolves it against the origin rather than appending it.
-	# None when the listing offers no original, as it does for an image, which has only a preview and a thumbnail; neither is the file.
+	# None when the listing offers no original, as it does for an image (observed 2026-09-26), which has only a preview and a thumbnail; neither is the file.
 	download_url: str | None = None
 
 	@classmethod

@@ -50,5 +50,33 @@
 			"token_count": null
 		},
 		"uuid": "<str>"
+	},
+	{
+		"success": true,
+		"path": null,
+		"sanitized_name": null,
+		"file_kind": "image",
+		"file_uuid": "<str>",
+		"file_name": "<redacted>",
+		"created_at": "<str>",
+		"user_uuid": null,
+		"size_bytes": 8929,
+		"thumbnail_url": "/api/<str>/files/<str>/thumbnail",
+		"preview_url": "/api/<str>/files/<str>/preview",
+		"thumbnail_asset": {
+			"url": "/api/<str>/files/<str>/thumbnail",
+			"file_variant": "thumbnail",
+			"primary_color": "<str>",
+			"image_width": 49,
+			"image_height": 50
+		},
+		"preview_asset": {
+			"url": "/api/<str>/files/<str>/preview",
+			"file_variant": "preview",
+			"primary_color": "<str>",
+			"image_width": 49,
+			"image_height": 50
+		},
+		"uuid": "<str>"
 	}
 ]

@@ -7,6 +7,7 @@ The document and project it creates have unmistakable names and are deleted in f
 """
 
 import os
+from collections.abc import Callable
 
 import pytest
 
@@ -248,7 +249,7 @@ def test_an_upload_downloads_as_its_original_bytes(client):
 
 	Skipped when no project has any, which proves nothing either way; upload a PDF to a private project to make it run.
 	"""
-	upload = _first_downloadable_upload(client)
+	upload = _first_upload(client, lambda upload: upload.download_url is not None)
 	if upload is None:
 		pytest.skip("no project on this account holds an uploaded file")
 
@@ -262,11 +263,25 @@ def test_an_upload_downloads_as_its_original_bytes(client):
 		assert len(data) == upload.size_bytes, "size_bytes in the listing should be the byte count of the original"
 
 
-def _first_downloadable_upload(client: ClaudeProjectsClient) -> UploadedFile | None:
-	"""The first upload on the account that offers an original, whichever project holds it."""
+@skip_unless_live
+def test_an_image_upload_offers_no_original(client):
+	"""Read-only: an image is listed with renditions only (observed 2026-09-26), so refusing to pull or back one up rests on the listing rather than on a guess.
+
+	Skipped when no project holds an image; add a PNG to a private project's knowledge to make it run.
+	"""
+	upload = _first_upload(client, lambda upload: upload.file_kind == "image")
+	if upload is None:
+		pytest.skip("no project on this account holds an uploaded image")
+
+	assert upload.download_url is None, "an image began offering an original, so pull_documents and delete_project could stop refusing it"
+	assert upload.page_count is None, "pages are a document's; an image never had any"
+
+
+def _first_upload(client: ClaudeProjectsClient, wanted: Callable[[UploadedFile], bool]) -> UploadedFile | None:
+	"""The first upload on the account that `wanted` accepts, whichever project holds it."""
 	for candidate in client.list_projects():
 		for upload in client.list_uploaded_files(candidate.uuid):
-			if upload.download_url:
+			if wanted(upload):
 				return upload
 
 	return None

@@ -428,8 +428,8 @@ class ClaudeProjectsClient:
 			entered_search_mode=(verdict == "search_mode") and allow_search_mode,
 		)
 
-	def delete_uploaded_file(self, project_id: str, upload_uuid: str) -> None:
-		"""Remove one upload, raising if claude.ai does not accept the delete.
+	def delete_uploaded_file(self, project_id: str, upload_uuid: str) -> bool:
+		"""True once claude.ai has accepted the delete; unlike the other deletes here, a 404 raises rather than returning False.
 
 		The web UI removes an upload by POSTing its uuid in a list to `.../files/delete_many`, and gets `null` back (captured 2026-09-28).
 		The documents route, which removes a document, answered 404 for an upload in the live suite.
@@ -437,6 +437,7 @@ class ClaudeProjectsClient:
 		What the route answers for an upload that really is gone has not been observed.
 		"""
 		self._request("POST", f"{self._files_path(project_id)}/delete_many", {"file_uuids": [upload_uuid]})
+		return True
 
 	def _upload_path(self, project_id: str) -> str:
 		organization_id = self.resolve_organization_for_project(project_id)

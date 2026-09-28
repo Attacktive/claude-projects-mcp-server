@@ -307,7 +307,7 @@ def test_an_upload_round_trips(client, project):
 		assert upload.file_kind == "image"
 		assert upload.size_bytes == len(data), "size_bytes should be the byte count of what was sent"
 
-		client.delete_uploaded_file(project, created)
+		assert client.delete_uploaded_file(project, created) is True
 		created = None
 		assert client.list_uploaded_files(project) == [], "the delete answered but the upload is still listed"
 	finally:

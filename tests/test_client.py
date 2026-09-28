@@ -343,8 +343,7 @@ class TestUploadingFiles:
 	def test_deletes_an_upload(self, api, client):
 		uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
 
-		client.delete_uploaded_file(PROJECT, uuid)
-
+		assert client.delete_uploaded_file(PROJECT, uuid) is True
 		assert client.list_uploaded_files(PROJECT) == []
 
 	def test_a_404_from_deleting_an_upload_is_raised_rather_than_read_as_already_gone(self, api, client):

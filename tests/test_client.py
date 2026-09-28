@@ -343,20 +343,26 @@ class TestUploadingFiles:
 	def test_deletes_an_upload(self, api, client):
 		uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
 
-		assert client.delete_uploaded_file(PROJECT, uuid) is True
+		client.delete_uploaded_file(PROJECT, uuid)
+
 		assert client.list_uploaded_files(PROJECT) == []
 
-	def test_deleting_an_upload_already_gone_is_not_an_error(self, client):
-		assert client.delete_uploaded_file(PROJECT, "never-existed") is False
+	def test_a_404_from_deleting_an_upload_is_raised_rather_than_read_as_already_gone(self, api, client):
+		"""A 404 from the old route was read as "already gone" in 0.8.0, which is how a delete that never happened passed for one that did."""
+		uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
+		api.fail_once("POST", "/files/delete_many$", NotFoundError("Not found (HTTP 404)"))
 
-	def test_an_upload_is_deleted_through_the_documents_route_with_its_uuid_in_the_body(self, api, client):
-		"""Captured 2026-09-26: the web UI removes an upload with `DELETE .../docs/{uuid}` and a body of `{"docUuid": uuid}`, the documents route rather than a files one."""
+		with pytest.raises(NotFoundError):
+			client.delete_uploaded_file(PROJECT, uuid)
+
+	def test_an_upload_is_deleted_through_the_files_route_with_its_uuid_in_a_list(self, api, client):
+		"""Captured 2026-09-28: the web UI removes an upload with `POST .../files/delete_many` and a body of `{"file_uuids": [uuid]}`, while `DELETE .../docs/{uuid}` answered 404 for one in the live suite."""
 		uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF-1.4 report")
 
 		client.delete_uploaded_file(PROJECT, uuid)
 
-		assert ("DELETE", f"/organizations/{ORGANIZATION}/projects/{PROJECT}/docs/{uuid}") in api.log
-		assert api.bodies_logged()[-1] == {"docUuid": uuid}
+		assert ("POST", f"/organizations/{ORGANIZATION}/projects/{PROJECT}/files/delete_many") in api.log
+		assert api.bodies_logged()[-1] == {"file_uuids": [uuid]}
 
 	def test_an_upload_crossing_the_search_threshold_is_refused_and_removed(self, api, client):
 		"""The API reports no token count for an upload, so its cost is the change in the knowledge size across the upload; a refused one is deleted again."""
@@ -400,7 +406,16 @@ class TestUploadingFiles:
 
 	def test_a_refused_upload_whose_removal_fails_is_reported_rather_than_raised(self, api, client):
 		api.projects[PROJECT]["_search_threshold"] = 50
-		api.fail_once("DELETE", "/docs/", ApiError("claude.ai returned HTTP 500.", status=500))
+		api.fail_once("POST", "/files/delete_many$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		result = client.upload_file(PROJECT, OutgoingFile("big.pdf", b"x" * 100, "application/pdf"))
+
+		assert result.rollback_failed is True
+		assert len(client.list_uploaded_files(PROJECT)) == 1
+
+	def test_a_refused_upload_whose_removal_answers_404_is_reported_rather_than_claimed_undone(self, api, client):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.fail_once("POST", "/files/delete_many$", NotFoundError("Not found (HTTP 404)"))
 
 		result = client.upload_file(PROJECT, OutgoingFile("big.pdf", b"x" * 100, "application/pdf"))
 
@@ -486,7 +501,18 @@ class TestUploadingFiles:
 	def test_a_replacement_whose_old_copy_will_not_delete_is_reported(self, api, client):
 		old_uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF old")
 		[old] = client.list_uploaded_files(PROJECT)
-		api.fail_once("DELETE", f"/docs/{old_uuid}$", ApiError("claude.ai returned HTTP 500.", status=500))
+		api.fail_once("POST", "/files/delete_many$", ApiError("claude.ai returned HTTP 500.", status=500))
+
+		result = client.upload_file(PROJECT, OutgoingFile("report.pdf", b"%PDF new", "application/pdf"), replacing=[old])
+
+		assert result.replaced_uuids == []
+		assert result.failed_delete_uuids == [old_uuid]
+		assert len(client.list_uploaded_files(PROJECT)) == 2
+
+	def test_a_replacement_whose_old_copy_answers_404_is_reported_as_left_behind(self, api, client):
+		old_uuid = api.add_upload(PROJECT, "report.pdf", b"%PDF old")
+		[old] = client.list_uploaded_files(PROJECT)
+		api.fail_once("POST", "/files/delete_many$", NotFoundError("Not found (HTTP 404)"))
 
 		result = client.upload_file(PROJECT, OutgoingFile("report.pdf", b"%PDF new", "application/pdf"), replacing=[old])
 

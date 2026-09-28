@@ -287,7 +287,7 @@ def test_an_image_upload_offers_no_original(client):
 
 @skip_unless_live
 def test_an_upload_round_trips(client, project):
-	"""Add a PNG the way the web UI does, see it listed, then remove it the way the web UI does (both captured 2026-09-26).
+	"""Add a PNG the way the web UI does (captured 2026-09-26), see it listed, then remove it the way the web UI does (captured 2026-09-28).
 
 	A PNG because that is the kind the capture carried.
 	A PDF through this path would prove the download side of a push too, and is worth adding once one has been seen going through.
@@ -307,7 +307,7 @@ def test_an_upload_round_trips(client, project):
 		assert upload.file_kind == "image"
 		assert upload.size_bytes == len(data), "size_bytes should be the byte count of what was sent"
 
-		assert client.delete_uploaded_file(project, created) is True
+		client.delete_uploaded_file(project, created)
 		created = None
 		assert client.list_uploaded_files(project) == [], "the delete answered but the upload is still listed"
 	finally:

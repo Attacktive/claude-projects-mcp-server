@@ -27,6 +27,8 @@ _KNOWLEDGE_STATS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects
 _FILES = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/files$")
 # Where the web UI POSTs a file it adds to a project's knowledge (captured 2026-09-26), as multipart form data rather than JSON.
 _UPLOAD = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/upload$")
+# Where the web UI POSTs the uuids of the uploads it removes (captured 2026-09-28), as `{"file_uuids": [...]}`.
+_DELETE_UPLOADS = re.compile(r"^/organizations/(?P<organization>[^/]+)/projects/(?P<project>[^/]+)/files/delete_many$")
 # The download URL the files listing hands out (observed 2026-09-18): host-relative, outside the project path, and starting with the `/api` that the base URL already ends with.
 _FILE_ASSET = re.compile(r"^/api/(?P<organization>[^/]+)/files/(?P<file>[^/]+)/(?P<variant>[^/]+)$")
 _SCHEDULED_TASKS = re.compile(r"^/organizations/(?P<organization>[^/]+)/cowork/scheduled_tasks$")
@@ -207,7 +209,7 @@ class FakeClaudeProjectsApi:
 			return self._patch(path, json_body or {})
 
 		if method == "DELETE":
-			return self._delete(path, json_body)
+			return self._delete(path)
 
 		raise ApiError(f"FakeClaudeProjectsApi has no route for {method} {path}", status=405)
 
@@ -329,6 +331,10 @@ class FakeClaudeProjectsApi:
 		if match:
 			return self._create_scheduled_task(match["organization"], body)
 
+		match = _DELETE_UPLOADS.match(path)
+		if match:
+			return self._delete_uploads(match["project"], body)
+
 		match = _DOCUMENTS.match(path)
 		if not match:
 			raise ApiError(f"FakeClaudeProjectsApi has no route for POST {path}", status=404)
@@ -380,7 +386,7 @@ class FakeClaudeProjectsApi:
 		task["updated_at"] = self._stamp()
 		return {"trigger": self._public_task(task)}
 
-	def _delete(self, path: str, body: dict | None) -> Any:
+	def _delete(self, path: str) -> Any:
 		match = _SCHEDULED_TASK.match(path)
 		if match:
 			task = self._find_task(match["task"])
@@ -400,23 +406,28 @@ class FakeClaudeProjectsApi:
 		if not match:
 			raise ApiError(f"FakeClaudeProjectsApi has no route for DELETE {path}", status=404)
 
-		upload = self._find_upload(match["project"], match["document"])
-		if upload is not None:
-			return self._delete_upload(match["project"], upload, body)
-
+		# An upload's uuid is not a document's, so this 404s for one, as the real route did in the live suite (2026-09-28).
 		document = self._find_document(match["project"], match["document"])
 		self.documents[match["project"]].remove(document)
 		return None
 
-	def _delete_upload(self, project_uuid: str, upload: dict, body: dict | None) -> None:
-		"""Remove an upload the way the web UI does (captured 2026-09-26): through the documents route, with `{"docUuid": uuid}` as the body.
+	def _delete_uploads(self, project_uuid: str, body: dict) -> None:
+		"""Remove uploads the way the web UI does (captured 2026-09-28), answering `null` as the capture did.
 
-		Whether the real server needs that body is unknown, so the fake holds the client to the capture rather than to a guess.
+		What the real server says about a uuid the project does not hold is unknown; the fake answers 404 and removes nothing, so a caller that swallows the answer is caught here rather than on claude.ai.
 		"""
-		if body != {"docUuid": upload["uuid"]}:
-			raise ApiError(f"DELETE of an upload must carry {{'docUuid': uuid}} as the web UI does, got {body!r}", status=400)
+		self._find_project(project_uuid)
+		uuids = body.get("file_uuids")
+		if not isinstance(uuids, list) or not uuids or set(body) != {"file_uuids"}:
+			raise ApiError(f"delete_many must carry a list of uuids as {{'file_uuids': [...]}}, as the web UI does, got {body!r}", status=400)
 
-		self.uploads[project_uuid].remove(upload)
+		uploads = [self._find_upload(project_uuid, uuid) for uuid in uuids]
+		if None in uploads:
+			raise NotFoundError(f"No upload among {uuids} in project {project_uuid}")
+
+		for upload in uploads:
+			self.uploads[project_uuid].remove(upload)
+
 		return None
 
 	def _projects_page(self, organization_uuid: str, parameters: dict[str, str]) -> dict:

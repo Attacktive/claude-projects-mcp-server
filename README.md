@@ -11,8 +11,8 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 570 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
-Files uploaded through the web UI, such as PDFs, are listed, pulled, pushed, and backed up before a deletion; the listing and `pull_documents` have run against real PDFs, but the push of an upload and the pre-delete backup of uploads have only run against the in-memory fake (see To do).
+All seventeen tools are implemented and covered by 572 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+Files uploaded through the web UI, such as PDFs, are listed, pulled, pushed, and backed up before a deletion; the listing and `pull_documents` have run against real PDFs and the upload request against a real PNG, but removing an upload and the pre-delete backup of uploads have only run against the in-memory fake (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
 What that established, and what the implementation now relies on:
@@ -58,8 +58,9 @@ Uploaded files (observed 2026-09-18) sit at `/organizations/{organization}/proje
   That one renaming is all that has been seen of the rule, so a push matches exact names rather than guessing at it, and warns when the server kept another name that pushing the file again would add a second upload.
 - Adding the plain text file was a `POST` to `/docs`, the document create endpoint (observed 2026-09-26), so it is the browser that decides which files become documents and which uploads, and the upload endpoint has only been seen taking a PNG.
   `push_documents` decides by the extension the same way, from a fixed table rather than the platform's mime types, which differ between machines: `.pdf`, `.png`, `.jpg`, `.jpeg`, `.gif`, and `.webp` are uploads, and every other file, other image formats included, is a text document.
-- The web UI removes an upload with `DELETE .../docs/{file_uuid}`, the documents route, carrying `{"docUuid": "<file_uuid>"}` as the body (captured 2026-09-26); the response was not captured.
-  Documents have been deleted through that route without a body since the spike, so the body goes along for uploads only, as captured.
+- The web UI removes an upload with `POST .../files/delete_many`, carrying `{"file_uuids": ["<file_uuid>"]}` as the body, and gets `null` back (captured 2026-09-28).
+  The live suite's first run that day had sent `DELETE .../docs/{file_uuid}` with a `{"docUuid": "<file_uuid>"}` body, as a capture from 2026-09-26 had shown, and claude.ai answered 404; which removal that capture was of is not known.
+  What `delete_many` answers for a uuid the project no longer holds has not been seen, so a 404 from it counts as a failed delete rather than as one already done.
 
 Response shapes captured from the real API live in `tests/fixtures/` and are asserted against by `tests/test_fixtures.py`, which stops the in-memory fake drifting away from what claude.ai actually sends.
 
@@ -69,10 +70,12 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
   The listing and `pull_documents` have: on 2026-09-18 the server pulled two real PDFs, with the size check passing and `%PDF` at the start of each file on disk, and `tests/live/test_contract.py` has opt-in checks that list a throwaway project's uploads and download the first real one on the account.
   `delete_project` backs an upload up with that same download, but what it adds, refusing an upload with no original or no size and stopping before anything is deleted when a backup fails, has only run against the in-memory fake.
   Run the live suite with `CLAUDE_PROJECTS_LIVE_TESTS=1` against an account holding a PDF, then delete a throwaway project holding one and check the backup directory, before trusting a deletion with uploads in it.
-- Pushing an upload has run only against the in-memory fake.
-  The request is built to the captured shape and sent to a local server in `tests/test_transport.py`, and `tests/live/test_contract.py` now adds a PNG to a throwaway project and removes it again; run the live suite before trusting a push with PDFs in it, and add a PDF to that check once one has gone through.
+- Pushing an upload has run against the real API once, and removing one has not.
+  On 2026-09-28 `tests/live/test_contract.py` added a PNG to a throwaway project: the name came back unchanged, the files listing showed it with the byte count sent, and the knowledge size fetched right after the reply had grown, so the capacity gate can see what an upload costs.
+  Its removal answered 404 on the route then used, and 0.8.0 read a 404 as "already gone", so a refused upload was reported undone and a replaced one removed while both stayed in the project.
+  Removal now takes the route the web UI uses and treats a 404 as a failure, but that route has only run against the in-memory fake; run the live suite before trusting a push that replaces or refuses an upload, and add a PDF to that check once one has gone through.
   What an upload adds to the knowledge size is measured as the change across the upload, since the API reports no token count for one, and the upload it replaces still counts when the verdict is reached, so a replacement near a line can be refused that would have fit once the old copy was gone.
-  Whether the knowledge size reflects an upload as soon as the reply arrives is unverified too; the canary asserts that it grows, and until that has been seen a size that did not move is treated as unmeasured rather than as a fit.
+  One run is one observation, so a size that did not move across an upload is still treated as unmeasured rather than as a fit.
 - Uploads other than PDFs cannot be read.
   An image's row offers only a preview and a thumbnail (observed 2026-09-26), neither of which is the file, so `pull_documents` reports it as an error and `delete_project` refuses until it is removed in the web UI.
   Which other kinds the web UI keeps as uploads, and whether they offer an original, is unknown: an HTML file and a plain text file became text documents instead, so only PDFs and images have been seen in a files listing, and `push_documents` sends only PDFs and PNG, JPEG, GIF, and WebP images as uploads, refusing any other file that is not UTF-8 text, other image formats included, rather than guessing.

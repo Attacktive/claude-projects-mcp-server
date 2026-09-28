@@ -428,18 +428,15 @@ class ClaudeProjectsClient:
 			entered_search_mode=(verdict == "search_mode") and allow_search_mode,
 		)
 
-	def delete_uploaded_file(self, project_id: str, upload_uuid: str) -> bool:
-		"""True if this call removed it, False if it was already gone.
+	def delete_uploaded_file(self, project_id: str, upload_uuid: str) -> None:
+		"""Remove one upload, raising if claude.ai does not accept the delete.
 
-		The web UI removes an upload through the documents route, `DELETE .../docs/{uuid}`, with the uuid repeated in a `docUuid` body (captured 2026-09-26).
-		The body goes along because whether the server needs it is unknown, and a request shaped like the capture is the one known to work.
+		The web UI removes an upload by POSTing its uuid in a list to `.../files/delete_many`, and gets `null` back (captured 2026-09-28).
+		The documents route, which removes a document, answered 404 for an upload in the live suite.
+		A 404 is raised rather than read as "already gone", because that reading is how the wrong route passed for a working one: a refused upload was reported undone while it stayed in the project.
+		What the route answers for an upload that really is gone has not been observed.
 		"""
-		try:
-			self._request("DELETE", f"{self._documents_path(project_id)}/{upload_uuid}", {"docUuid": upload_uuid})
-		except NotFoundError:
-			return False
-
-		return True
+		self._request("POST", f"{self._files_path(project_id)}/delete_many", {"file_uuids": [upload_uuid]})
 
 	def _upload_path(self, project_id: str) -> str:
 		organization_id = self.resolve_organization_for_project(project_id)

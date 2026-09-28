@@ -66,8 +66,9 @@ def organization_id(settings):
 	"""Where the throwaway projects are created, or None to leave it to the client, which picks an account's only organization and refuses to guess between several.
 
 	Read after `settings`, which loads `.env`, so the variable can live there beside the session key.
+	Whitespace around the value is dropped and a blank one counts as unset, as in the server's own settings, so neither goes out as part of an organization uuid.
 	"""
-	return os.environ.get(LIVE_ORGANIZATION_VARIABLE) or None
+	return os.environ.get(LIVE_ORGANIZATION_VARIABLE, "").strip() or None
 
 
 @pytest.fixture

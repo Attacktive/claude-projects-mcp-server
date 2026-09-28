@@ -1,6 +1,7 @@
 """The canary for an undocumented API.
 
 Skipped unless CLAUDE_PROJECTS_LIVE_TESTS=1.
+On an account in more than one organization, CLAUDE_PROJECTS_LIVE_ORGANIZATION_ID also has to name the one the throwaway projects go in.
 Run it by hand when something breaks: it is the fastest way to tell "claude.ai changed" apart from "we have a bug", because it exercises the real endpoints end to end and nothing else in the suite touches the network.
 
 The document, project, and upload it creates have unmistakable names and are deleted in finally blocks, so a failure mid-test leaves at most one obvious stray behind.
@@ -15,8 +16,8 @@ import pytest
 
 from claude_projects_mcp.client import ClaudeProjectsClient, OutgoingFile
 from claude_projects_mcp.config import Settings, load_env_file
-from claude_projects_mcp.errors import NotFoundError
-from claude_projects_mcp.models import UploadedFile
+from claude_projects_mcp.errors import ConfigError, NotFoundError
+from claude_projects_mcp.models import Project, UploadedFile
 from claude_projects_mcp.transport import CurlCffiTransport
 
 pytestmark = pytest.mark.live
@@ -26,6 +27,8 @@ CONTRACT_PROJECT = "__claude_projects_mcp_contract_test_project__"
 DOCUMENT_HOST_PROJECT = "__claude_projects_mcp_contract_test_docs__"
 CONTRACT_TASK = "__claude_projects_mcp_contract_test_task__"
 CONTRACT_UPLOAD = "__claude_projects_mcp_contract_test__.png"
+
+LIVE_ORGANIZATION_VARIABLE = "CLAUDE_PROJECTS_LIVE_ORGANIZATION_ID"
 
 # Monday at midnight UTC: days away whatever day this runs, so a task deleted moments later can never have fired.
 CONTRACT_CRON = "0 0 * * 1"
@@ -58,6 +61,15 @@ def transport(settings):
 	instance.close()
 
 
+@pytest.fixture(scope="module")
+def organization_id(settings):
+	"""Where the throwaway projects are created, or None to leave it to the client, which picks an account's only organization and refuses to guess between several.
+
+	Read after `settings`, which loads `.env`, so the variable can live there beside the session key.
+	"""
+	return os.environ.get(LIVE_ORGANIZATION_VARIABLE) or None
+
+
 @pytest.fixture
 def client(transport):
 	# The client is per-test even though the connection is not, so one test's cached organization lookups cannot make another test pass.
@@ -65,17 +77,13 @@ def client(transport):
 
 
 @pytest.fixture
-def project(client):
+def project(client, organization_id):
 	"""A throwaway private project, so the document tests never touch the team's own.
 
 	It used to borrow a project named in the environment, which meant running the suite wrote into a real shared one.
 	Now that projects can be created, there is no reason to.
 	"""
-	created = client.create_project(
-		DOCUMENT_HOST_PROJECT,
-		description="contract test, safe to delete",
-		is_private=True,
-	)
+	created = _create_private_project(client, organization_id, DOCUMENT_HOST_PROJECT)
 	yield created.uuid
 	client.delete_project(created.uuid)
 
@@ -205,17 +213,13 @@ def test_a_projects_scheduled_tasks_can_be_found_by_project(client, project):
 
 
 @skip_unless_live
-def test_a_project_round_trips(client):
+def test_a_project_round_trips(client, organization_id):
 	"""Create, read, update, then delete — the full project path against the real API.
 
 	Created private, so a failure that outlives the finally block leaves a stray only the account owner can see rather than something the whole team notices.
 	"""
 	try:
-		created = client.create_project(
-			CONTRACT_PROJECT,
-			description="contract test, safe to delete",
-			is_private=True,
-		)
+		created = _create_private_project(client, organization_id, CONTRACT_PROJECT)
 		assert created.uuid
 
 		# The create response carries no prompt_template, so instructions need the fetch.
@@ -308,6 +312,22 @@ def test_an_upload_round_trips(client, project):
 	finally:
 		if created is not None:
 			client.delete_uploaded_file(project, created)
+
+
+def _create_private_project(client: ClaudeProjectsClient, organization_id: str | None, name: str) -> Project:
+	"""A private project for the suite to write into, in the organization the environment names.
+
+	The client's refusal to pick between organizations tells the caller to pass organization_id, which a pytest run cannot, so it is pointed at the variable instead.
+	"""
+	try:
+		return client.create_project(
+			name,
+			description="contract test, safe to delete",
+			organization_id=organization_id,
+			is_private=True,
+		)
+	except ConfigError as error:
+		pytest.fail(f"{error} The live suite takes it from {LIVE_ORGANIZATION_VARIABLE}.")
 
 
 def _tiny_png() -> bytes:

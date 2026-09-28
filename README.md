@@ -213,5 +213,8 @@ CLAUDE_PROJECTS_LIVE_TESTS=1 uv run pytest tests/live -v      # real round-trip 
 uv run ruff check .
 ```
 
+The live suite creates its throwaway projects in the account's only organization.
+On an account in more than one, set `CLAUDE_PROJECTS_LIVE_ORGANIZATION_ID` to the uuid of the one to use, in the environment or in `.env`; the failure lists them.
+
 Tests never touch the network except `tests/test_transport.py` (a local HTTP server) and `tests/live` (opt-in).
 Everything else runs against an in-memory fake of the API.

@@ -12,7 +12,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 ## Status
 
 All seventeen tools are implemented and covered by 572 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
-Files uploaded through the web UI, such as PDFs, are listed, pulled, pushed, and backed up before a deletion; the listing and `pull_documents` have run against real PDFs and the upload request against a real PNG, but removing an upload and the pre-delete backup of uploads have only run against the in-memory fake (see To do).
+Files uploaded through the web UI, such as PDFs, are listed, pulled, pushed, and backed up before a deletion; the listing and `pull_documents` have run against real PDFs, and adding and removing an upload against a real PNG, but the pre-delete backup of uploads has only run against the in-memory fake (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
 What that established, and what the implementation now relies on:
@@ -70,10 +70,11 @@ Response shapes captured from the real API live in `tests/fixtures/` and are ass
   The listing and `pull_documents` have: on 2026-09-18 the server pulled two real PDFs, with the size check passing and `%PDF` at the start of each file on disk, and `tests/live/test_contract.py` has opt-in checks that list a throwaway project's uploads and download the first real one on the account.
   `delete_project` backs an upload up with that same download, but what it adds, refusing an upload with no original or no size and stopping before anything is deleted when a backup fails, has only run against the in-memory fake.
   Run the live suite with `CLAUDE_PROJECTS_LIVE_TESTS=1` against an account holding a PDF, then delete a throwaway project holding one and check the backup directory, before trusting a deletion with uploads in it.
-- Pushing an upload has run against the real API once, and removing one has not.
+- Adding an upload and removing it have run against the real API, but only with a PNG.
   On 2026-09-28 `tests/live/test_contract.py` added a PNG to a throwaway project: the name came back unchanged, the files listing showed it with the byte count sent, and the knowledge size fetched right after the reply had grown, so the capacity gate can see what an upload costs.
   Its removal answered 404 on the route then used, and 0.8.0 read a 404 as "already gone", so a refused upload was reported undone and a replaced one removed while both stayed in the project.
-  Removal now takes the route the web UI uses and treats a 404 as a failure, but that route has only run against the in-memory fake; run the live suite before trusting a push that replaces or refuses an upload, and add a PDF to that check once one has gone through.
+  Removal now takes the route the web UI uses and treats a 404 as a failure, and the live suite ran that route the same day: the delete was accepted and the files listing came back empty.
+  Add a PDF to that check once one has gone through.
   What an upload adds to the knowledge size is measured as the change across the upload, since the API reports no token count for one, and the upload it replaces still counts when the verdict is reached, so a replacement near a line can be refused that would have fit once the old copy was gone.
   One run is one observation, so a size that did not move across an upload is still treated as unmeasured rather than as a fit.
 - Uploads other than PDFs cannot be read.

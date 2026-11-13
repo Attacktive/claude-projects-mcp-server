@@ -438,6 +438,7 @@ def push(
 	Never deletes remote documents that are missing locally: a partial folder must not prune a shared project.
 	Matches only the files directly inside the folder, and refuses a pattern that reaches elsewhere, because a project's documents are a flat list and recursing would collide names.
 	A file that resolves outside the folder, such as a symbolic link to somewhere else on disk, is reported rather than uploaded.
+	A file whose name starts with a period is reported rather than sent unless the pattern starts with one too, the way a shell expands `*`, so a `.env` in the folder does not ride along with `pattern='*'`.
 	A dry run previews where the real push would stop, from estimated token counts, since it writes nothing to measure.
 	A folder that exists but cannot be read raises, as a missing one does, rather than pushing nothing.
 	"""
@@ -450,7 +451,7 @@ def push(
 	if options is None:
 		options = PushOptions()
 
-	matching_paths = _matching_files(source, pattern)
+	matching_paths, hidden_paths = _without_hidden(_matching_files(source, pattern), pattern)
 	documents = client.list_documents(project_id)
 	preview = None
 	if matching_paths:
@@ -462,7 +463,7 @@ def push(
 
 	context = _PushContext(client, project_id, source.resolve(), by_name(documents), options, preview, _RemoteUploads(client, project_id, known_uploads))
 
-	return _push_all(context, matching_paths)
+	return [_hidden_row(path) for path in hidden_paths] + _push_all(context, matching_paths)
 
 
 def _ensure_readable(source: Path) -> None:
@@ -490,6 +491,25 @@ def _matching_files(source: Path, pattern: str) -> list[Path]:
 		raise InvalidPatternError(f"pattern {pattern!r} is a path, not a file name pattern. A project's documents are a flat list, so push_documents matches only the files directly inside source_directory; pass something like '*.md'.")
 
 	return [path for path in sorted(source.glob(pattern)) if path.is_file()]
+
+
+def _without_hidden(paths: list[Path], pattern: str) -> tuple[list[Path], list[Path]]:
+	"""`paths` split into the ones to send and the hidden ones to leave behind.
+
+	`Path.glob` matches a name that starts with a period where a shell's `*` does not, and the caller expects the shell's reading.
+	A pattern that starts with a period asked for hidden files by name, so nothing is held back from it.
+	"""
+	if pattern.startswith("."):
+		return paths, []
+
+	visible = [path for path in paths if not path.name.startswith(".")]
+	hidden = [path for path in paths if path.name.startswith(".")]
+
+	return visible, hidden
+
+
+def _hidden_row(path: Path) -> FileResult:
+	return FileResult(path.name, "skipped_hidden", local_path=str(path), detail="not sent: the name starts with a period, and a pattern matches such a file only when it starts with one too, as in a shell; pass a pattern such as '.*' or the exact name to send it")
 
 
 def _push_all(context: _PushContext, paths: list[Path]) -> list[FileResult]:

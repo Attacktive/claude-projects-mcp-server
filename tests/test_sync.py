@@ -198,6 +198,36 @@ class TestPush:
 
 		assert set(statuses(results)) == {"notes.md", "data.csv"}
 
+	def test_a_hidden_file_is_left_behind_by_a_wide_pattern(self, api, client, tmp_path):
+		"""A shell's `*` skips names that start with a period, and `Path.glob` does not, so `.env` would otherwise land in a shared project."""
+		(tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, pattern="*")
+
+		assert statuses(results) == {".env": "skipped_hidden", "notes.md": "created"}
+		assert api.document_names(PROJECT) == ["notes.md"]
+
+		detail = {result.file_name: result.detail for result in results}[".env"]
+		assert detail is not None and "starts with a period" in detail
+
+	@pytest.mark.parametrize("pattern", [".*", ".notes", ".n*"])
+	def test_a_pattern_that_starts_with_a_period_sends_hidden_files(self, api, client, tmp_path, pattern):
+		(tmp_path / ".notes").write_text("hello", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, pattern=pattern)
+
+		assert statuses(results) == {".notes": "created"}
+		assert api.document_names(PROJECT) == [".notes"]
+
+	def test_a_folder_of_only_hidden_files_writes_nothing(self, api, client, tmp_path):
+		(tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, pattern="*")
+
+		assert statuses(results) == {".env": "skipped_hidden"}
+		assert "POST" not in api.methods_logged()
+
 	def test_subdirectories_are_ignored(self, api, client, tmp_path):
 		"""A project's documents are a flat list, so recursing would collide names."""
 		nested = tmp_path / "sub"

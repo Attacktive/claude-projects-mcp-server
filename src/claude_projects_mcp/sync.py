@@ -502,8 +502,13 @@ def _without_hidden(paths: list[Path], pattern: str) -> tuple[list[Path], list[P
 	if pattern.startswith("."):
 		return paths, []
 
-	visible = [path for path in paths if not path.name.startswith(".")]
-	hidden = [path for path in paths if path.name.startswith(".")]
+	visible = []
+	hidden = []
+	for path in paths:
+		if path.name.startswith("."):
+			hidden.append(path)
+		else:
+			visible.append(path)
 
 	return visible, hidden
 

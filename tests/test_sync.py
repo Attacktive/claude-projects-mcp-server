@@ -211,7 +211,17 @@ class TestPush:
 		detail = {result.file_name: result.detail for result in results}[".env"]
 		assert detail is not None and "starts with a period" in detail
 
-	@pytest.mark.parametrize("pattern", [".*", ".notes", ".n*"])
+	def test_a_current_directory_prefix_does_not_count_as_asking_for_hidden_files(self, api, client, tmp_path):
+		"""`./*` is the same pattern as `*`, and its leading period belongs to the folder, not to the file name."""
+		(tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, pattern="./*")
+
+		assert statuses(results) == {".env": "skipped_hidden", "notes.md": "created"}
+		assert api.document_names(PROJECT) == ["notes.md"]
+
+	@pytest.mark.parametrize("pattern", [".*", ".notes", ".n*", "./.*"])
 	def test_a_pattern_that_starts_with_a_period_sends_hidden_files(self, api, client, tmp_path, pattern):
 		(tmp_path / ".notes").write_text("hello", encoding="utf-8")
 

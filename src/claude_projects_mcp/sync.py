@@ -497,9 +497,10 @@ def _without_hidden(paths: list[Path], pattern: str) -> tuple[list[Path], list[P
 	"""`paths` split into the ones to send and the hidden ones to leave behind.
 
 	`Path.glob` matches a name that starts with a period where a shell's `*` does not, and the caller expects the shell's reading.
-	A pattern that starts with a period asked for hidden files by name, so nothing is held back from it.
+	A pattern whose file name part starts with a period asked for hidden files by name, so nothing is held back from it.
+	The test is on that part rather than on the string, because `./*` is the same pattern as `*` and its period names the folder.
 	"""
-	if pattern.startswith("."):
+	if PurePath(pattern).name.startswith("."):
 		return paths, []
 
 	visible = []

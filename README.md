@@ -8,6 +8,10 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 > **Unofficial.** This uses the same undocumented endpoints the claude.ai browser app uses, authenticated with a `sessionKey` cookie.
 > Anthropic can change or break them without notice.
 > Endpoint shapes were derived from [guidodinello/claude-client](https://github.com/guidodinello/claude-client).
+>
+> Anthropic does document one official API that reaches projects, the [Compliance API](https://platform.claude.com/docs/en/manage-claude/compliance-content-data), and this server does not use it.
+> It lists, reads, and permanently deletes projects, their documents, and their uploaded files, but it cannot create or change any of them, so every write here would still need the undocumented endpoints.
+> It is also limited to Claude Enterprise organizations, takes a Compliance Access Key that reaches every user's chats and projects in the organization, and names things with its own identifiers rather than the UUIDs used here.
 
 ## Status
 

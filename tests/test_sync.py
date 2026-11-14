@@ -1,4 +1,5 @@
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -255,6 +256,60 @@ class TestPush:
 
 		assert result.status == "created"
 		assert api.document_names(PROJECT) == ["notes.md"]
+
+	@pytest.mark.parametrize("patterns", [["NOTES.md", "*.md"], ["*.md", "NOTES.md"], ["NOTES.md", "Notes.md"], ["NOTES.md"]])
+	def test_a_file_reached_through_another_spelling_is_sent_once_under_its_listed_name(self, api, client, tmp_path, patterns):
+		"""A pattern with no wildcard is looked up rather than matched, so where the filesystem ignores case it finds `notes.md` and hands it back spelled the pattern's way; merged like that, one file would go up as two documents."""
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+		if not (tmp_path / "NOTES.md").exists():
+			pytest.skip("this filesystem tells NOTES.md from notes.md")
+
+		results = push(client, PROJECT, tmp_path, patterns=patterns)
+
+		assert [(result.file_name, result.status) for result in results] == [("notes.md", "created")]
+		assert api.document_names(PROJECT) == ["notes.md"]
+
+	@pytest.mark.skipif(sys.platform == "win32", reason="creating a symbolic link needs a privilege on Windows")
+	def test_another_spelling_means_the_file_it_names_rather_than_a_link_to_it(self, api, client, tmp_path):
+		"""`link.md` is the same file as `notes.md` and sorts ahead of it, and `NOTES.md` still means `notes.md`."""
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+		(tmp_path / "link.md").symlink_to(tmp_path / "notes.md")
+		if not (tmp_path / "NOTES.md").exists():
+			pytest.skip("this filesystem tells NOTES.md from notes.md")
+
+		results = push(client, PROJECT, tmp_path, patterns=["NOTES.md"])
+
+		assert statuses(results) == {"notes.md": "created"}
+
+	def test_a_file_reached_through_another_unicode_form_is_sent_once(self, api, client, tmp_path):
+		"""A name typed precomposed finds a file stored decomposed where the filesystem folds the two forms together, as APFS does."""
+		composed = unicodedata.normalize("NFC", "보고서.md")
+		(tmp_path / unicodedata.normalize("NFD", composed)).write_text("hello", encoding="utf-8")
+		if not (tmp_path / composed).exists():
+			pytest.skip("this filesystem tells the two Unicode forms of the name apart")
+
+		[listed] = [path.name for path in tmp_path.iterdir()]
+
+		results = push(client, PROJECT, tmp_path, patterns=[composed, "*.md"])
+
+		assert [(result.file_name, result.status) for result in results] == [(listed, "created")]
+
+	@pytest.mark.skipif(sys.platform == "win32", reason="creating a symbolic link needs a privilege on Windows")
+	@pytest.mark.parametrize("typed", ["café.md", "CAFÉ.MD"], ids=["another_form", "another_form_and_case"])
+	def test_another_unicode_form_means_the_file_it_names_rather_than_a_link_to_it(self, api, client, tmp_path, typed):
+		"""`.alias.md` is the same file and sorts ahead of it, and folding case alone does not tell that a precomposed name and a decomposed one are one name, so the alias was taken for the file and left behind as hidden."""
+		typed = unicodedata.normalize("NFC", typed)
+		stored = unicodedata.normalize("NFD", "café.md")
+		(tmp_path / stored).write_text("hello", encoding="utf-8")
+		(tmp_path / ".alias.md").symlink_to(tmp_path / stored)
+		if not (tmp_path / typed).exists():
+			pytest.skip("this filesystem tells the spellings of the name apart")
+
+		[listed] = [path.name for path in tmp_path.iterdir() if path.name != ".alias.md"]
+
+		results = push(client, PROJECT, tmp_path, patterns=[typed])
+
+		assert [(result.file_name, result.status) for result in results] == [(listed, "created")]
 
 	def test_the_capacity_gate_judges_the_merged_matches(self, api, client, tmp_path):
 		"""One push stops at `b.txt` and leaves `c.md` unsent, where a push per pattern would have sent `c.md` before the other met the refusal."""

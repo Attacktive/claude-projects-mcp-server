@@ -11,6 +11,7 @@ Neither deletes anything the other side is missing, and neither overwrites diffe
 
 import math
 import os
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import cache
@@ -503,11 +504,12 @@ def _selected(source: Path, patterns: Sequence[str]) -> _Selection:
 	if not patterns:
 		raise InvalidPatternError("patterns is empty; pass at least one file name pattern such as '*.md'.")
 
+	listed = frozenset(os.listdir(source))
 	paths: set[Path] = set()
 	hidden: set[Path] = set()
 	unmatched = []
 	for pattern in dict.fromkeys(patterns):
-		matches = _matching_files(source, pattern)
+		matches = [_as_listed(path, listed) for path in _matching_files(source, pattern)]
 		if not matches:
 			unmatched.append(pattern)
 
@@ -532,6 +534,41 @@ def _matching_files(source: Path, pattern: str) -> list[Path]:
 		raise InvalidPatternError(f"pattern {pattern!r} is a path, not a file name pattern. A project's documents are a flat list, so push_documents matches only the files directly inside source_directory; pass something like '*.md'.")
 
 	return [path for path in sorted(source.glob(pattern)) if path.is_file()]
+
+
+def _as_listed(path: Path, listed: frozenset[str]) -> Path:
+	"""`path` under the name its folder lists it by, which is the name it is sent under.
+
+	A pattern with no wildcard is looked up rather than matched against the listing, so on a filesystem that ignores case, or the Unicode form of a name, it finds the file and hands it back spelled the pattern's way.
+	Merged like that, a file another pattern also reached would be sent twice, under two names.
+	Several listed names can be the same file, as a link beside it is, so the one that is `path`'s own name in another case or Unicode form is preferred, and only when none is does the first of them stand in.
+	"""
+	if path.name in listed:
+		return path
+
+	siblings = sorted(path.parent / name for name in listed)
+	same = [sibling for sibling in siblings if _is_same_file(sibling, path)]
+	if not same:
+		return path
+
+	wanted = _caseless(path.name)
+	return next((sibling for sibling in same if _caseless(sibling.name) == wanted), same[0])
+
+
+def _caseless(name: str) -> str:
+	"""`name` in the form two spellings of one name share, whatever their case and whether their accents are precomposed.
+
+	The recipe is the caseless comparison of the Python Unicode HOWTO: decomposed, case-folded, and decomposed again, since folding the case of a few characters returns text that is no longer normalized.
+	"""
+	return unicodedata.normalize("NFD", unicodedata.normalize("NFD", name).casefold())
+
+
+def _is_same_file(sibling: Path, path: Path) -> bool:
+	"""Whether the two paths reach one file, with a listed name that cannot be examined, such as a broken link, counting as another file."""
+	try:
+		return sibling.samefile(path)
+	except OSError:
+		return False
 
 
 def _without_hidden(paths: list[Path], pattern: str) -> tuple[list[Path], list[Path]]:

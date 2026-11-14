@@ -156,6 +156,12 @@ Start with `list_projects` to find the uuid, or take it from the URL: `https://c
 Give documents a file extension: the web UI picks its renderer by name, so `notes` displays as plain text where `notes.md` renders as markdown.
 `write_document` and `rename_document` warn when a name has none — a bare trailing period counts as none — and suggest the `.md` form; the write itself still goes ahead.
 
+`push_documents` takes `patterns`, a list of file name patterns that defaults to `['*.md']`, and merges what they match into one push — each file once, in name order — so the capacity gate and a dry run judge the whole set: `patterns=['*.md', '*.pdf']` sends a folder's Markdown files and PDFs and nothing else.
+A pattern that matches no file comes back as an `unmatched_pattern` row and in the `warning`, so a mistyped one does not go unnoticed behind what the others matched.
+A file goes up under the name its folder lists it by, however a pattern spelled it: where the filesystem ignores case or the Unicode form of a name, `NOTES.md` finds `notes.md`, and the two are one file sent once.
+Through 0.8.2 this was a single `pattern` string; a call that still passes one is refused with an error that spells the `patterns` form, so update any saved prompt that uses it.
+Left alone, the MCP SDK would drop an argument the schema lacks without an error (observed with `mcp` 2.3.0), and the default `['*.md']` would decide what is sent.
+
 A result carries a `warning` key only when there is something to hear, and it comes first.
 The model is the only reader a tool result is guaranteed to have, so the tool descriptions and the server instructions tell it to relay any `warning` to the user verbatim — nothing else in the chain will.
 

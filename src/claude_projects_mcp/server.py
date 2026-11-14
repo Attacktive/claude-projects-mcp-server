@@ -12,6 +12,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
+from pydantic.json_schema import SkipJsonSchema
 
 from .backup import BackupStore
 from .client import ClaudeProjectsClient, ReplaceResult, looks_like_uuid
@@ -552,16 +553,21 @@ def _push_warning(results: list[FileResult]) -> str | None:
 def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=False),
-		description="Send a local folder's files into the project: a PDF, PNG, JPEG, GIF, or WebP file goes up as an uploaded file, the way the web UI adds one, and every other file, other image formats included, becomes a text document and must be UTF-8. The default pattern `*.md` matches no upload, so pass pattern='*' to send everything in the folder. As in a shell, a file whose name starts with a period, such as `.env`, is matched only by a pattern that starts with one too; any other pattern reports it as `skipped_hidden` and leaves it behind. Unchanged files are skipped, differing ones need overwrite=true (the replaced version is backed up locally first), and nothing remote that is missing locally is ever deleted. An uploaded image already in the project is left alone, since it offers no original to compare against or back up. Use dry_run=true to preview, including where the push would stop; that stop is an estimate, since a preview writes nothing to measure, and it cannot count uploads at all. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
+		description="Send a local folder's files into the project: a PDF, PNG, JPEG, GIF, or WebP file goes up as an uploaded file, the way the web UI adds one, and every other file, other image formats included, becomes a text document and must be UTF-8. `patterns` is a list of file name patterns, and the files directly inside the folder that match any of them make one push, each file once and in name order, so the capacity stop and a dry run cover the whole set. The default `['*.md']` matches no upload, so pass patterns=['*'] to send everything in the folder, or name the kinds, as in patterns=['*.md', '*.pdf']. A pattern that matches no file is reported as an `unmatched_pattern` row and in `warning`. As in a shell, a file whose name starts with a period, such as `.env`, is sent only when a pattern that starts with one too matches it; matched only by other patterns, it is reported as `skipped_hidden` and left behind. Unchanged files are skipped, differing ones need overwrite=true (the replaced version is backed up locally first), and nothing remote that is missing locally is ever deleted. An uploaded image already in the project is left alone, since it offers no original to compare against or back up. Use dry_run=true to preview, including where the push would stop; that stop is an estimate, since a preview writes nothing to measure, and it cannot count uploads at all. Stops at the first file that would grow the project past its search threshold or its maximum (allow_search_mode=true accepts the threshold); files already pushed stay. Relay any `warning` in the result to the user verbatim.",
 	)
 	def push_documents(
 		project_id: str,
 		source_directory: str,
-		pattern: str = "*.md",
+		patterns: tuple[str, ...] = ("*.md",),
 		overwrite: bool = False,
 		dry_run: bool = False,
 		allow_search_mode: bool = False,
+		pattern: SkipJsonSchema[str | None] = None,
 	) -> dict:
+		# `pattern` was the argument through 0.8.2, and it is kept out of the schema and accepted only to be refused: the SDK drops an argument the schema lacks without an error, and the default would then push files the caller never asked for.
+		if pattern is not None:
+			raise ToolError(f"push_documents no longer takes `pattern`: it became `patterns`, a list of file name patterns. Pass patterns=[{pattern!r}].")
+
 		try:
 			with translated():
 				options = PushOptions(
@@ -576,7 +582,7 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 					client,
 					project_id,
 					Path(source_directory),
-					pattern=pattern,
+					patterns=patterns,
 					options=options,
 				)
 		except OSError as exception:

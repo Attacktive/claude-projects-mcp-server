@@ -194,7 +194,7 @@ class TestPush:
 		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
 		(tmp_path / "data.csv").write_text("a,b", encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, pattern="*")
+		results = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert set(statuses(results)) == {"notes.md", "data.csv"}
 
@@ -203,7 +203,7 @@ class TestPush:
 		(tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
 		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, pattern="*")
+		results = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert statuses(results) == {".env": "skipped_hidden", "notes.md": "created"}
 		assert api.document_names(PROJECT) == ["notes.md"]
@@ -216,7 +216,7 @@ class TestPush:
 		(tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
 		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, pattern="./*")
+		results = push(client, PROJECT, tmp_path, patterns=["./*"])
 
 		assert statuses(results) == {".env": "skipped_hidden", "notes.md": "created"}
 		assert api.document_names(PROJECT) == ["notes.md"]
@@ -225,7 +225,7 @@ class TestPush:
 	def test_a_pattern_that_starts_with_a_period_sends_hidden_files(self, api, client, tmp_path, pattern):
 		(tmp_path / ".notes").write_text("hello", encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, pattern=pattern)
+		results = push(client, PROJECT, tmp_path, patterns=[pattern])
 
 		assert statuses(results) == {".notes": "created"}
 		assert api.document_names(PROJECT) == [".notes"]
@@ -233,10 +233,105 @@ class TestPush:
 	def test_a_folder_of_only_hidden_files_writes_nothing(self, api, client, tmp_path):
 		(tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, pattern="*")
+		results = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert statuses(results) == {".env": "skipped_hidden"}
 		assert "POST" not in api.methods_logged()
+
+	def test_several_patterns_make_one_push_in_name_order(self, api, client, tmp_path):
+		"""The Markdown files and the PDFs of a folder, and nothing else, without a second push that knows nothing of the first."""
+		(tmp_path / "a.md").write_text("hello", encoding="utf-8")
+		(tmp_path / "b.pdf").write_bytes(b"%PDF b")
+		(tmp_path / "c.txt").write_text("nope", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, patterns=["*.pdf", "*.md"])
+
+		assert [(result.file_name, result.status) for result in results] == [("a.md", "created"), ("b.pdf", "created")]
+
+	def test_a_file_two_patterns_match_is_sent_once(self, api, client, tmp_path):
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+
+		[result] = push(client, PROJECT, tmp_path, patterns=["*", "*.md"])
+
+		assert result.status == "created"
+		assert api.document_names(PROJECT) == ["notes.md"]
+
+	def test_the_capacity_gate_judges_the_merged_matches(self, api, client, tmp_path):
+		"""One push stops at `b.txt` and leaves `c.md` unsent, where a push per pattern would have sent `c.md` before the other met the refusal."""
+		api.projects[PROJECT]["_search_threshold"] = 50
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+		(tmp_path / "b.txt").write_text("b" * 100, encoding="utf-8")
+		(tmp_path / "c.md").write_text("c" * 10, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, patterns=["*.md", "*.txt"])
+
+		assert statuses(results) == {"a.md": "created", "b.txt": "refused_full", "c.md": "skipped_full"}
+		assert api.document_names(PROJECT) == ["a.md"]
+
+	def test_a_dry_run_previews_the_merged_matches(self, api, client, tmp_path):
+		api.projects[PROJECT]["_search_threshold"] = 50
+		api.add_document(PROJECT, "seed.md", "s" * 10)
+		(tmp_path / "a.md").write_text("a" * 10, encoding="utf-8")
+		(tmp_path / "b.txt").write_text("b" * 100, encoding="utf-8")
+		(tmp_path / "c.md").write_text("c" * 10, encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, patterns=["*.md", "*.txt"], options=PushOptions(dry_run=True))
+
+		assert statuses(results) == {"a.md": "created", "b.txt": "refused_full", "c.md": "skipped_full"}
+		assert "POST" not in api.methods_logged()
+
+	def test_a_hidden_file_is_sent_when_one_of_the_patterns_asks_for_it(self, api, client, tmp_path):
+		"""`*` alone would leave `.notes` behind, and `.notes` beside it asks for the file by name."""
+		(tmp_path / ".notes").write_text("hello", encoding="utf-8")
+		(tmp_path / "plain.md").write_text("hello", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, patterns=["*", ".notes"])
+
+		assert statuses(results) == {".notes": "created", "plain.md": "created"}
+
+	def test_a_hidden_file_no_pattern_asked_for_is_reported_once(self, api, client, tmp_path):
+		(tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, patterns=["*", "*.env"])
+
+		assert [(result.file_name, result.status) for result in results] == [(".env", "skipped_hidden")]
+		assert api.document_names(PROJECT) == []
+
+	def test_a_pattern_that_matches_no_file_is_reported_ahead_of_the_files(self, api, client, tmp_path):
+		"""A typo in one pattern would otherwise go unnoticed behind what the others matched."""
+		(tmp_path / "a.md").write_text("hello", encoding="utf-8")
+
+		results = push(client, PROJECT, tmp_path, patterns=["*.md", "*.pfd"])
+
+		assert [(result.file_name, result.status) for result in results] == [("*.pfd", "unmatched_pattern"), ("a.md", "created")]
+
+		unmatched = results[0]
+		assert unmatched.kind == "pattern"
+		assert unmatched.local_path is None
+		assert unmatched.detail is not None and repr("*.pfd") in unmatched.detail
+		assert unmatched.warning is not None and repr("*.pfd") in unmatched.warning
+
+	def test_the_default_pattern_says_so_when_the_folder_holds_no_markdown(self, api, client, tmp_path):
+		"""An empty result would read as a project already in sync."""
+		(tmp_path / "report.pdf").write_bytes(b"%PDF report")
+
+		[result] = push(client, PROJECT, tmp_path)
+
+		assert (result.file_name, result.status) == ("*.md", "unmatched_pattern")
+		assert "POST" not in api.methods_logged()
+
+	def test_a_pattern_that_matches_only_a_folder_is_reported(self, client, tmp_path):
+		"""Only files are sent, so a pattern that found a folder found nothing to send."""
+		(tmp_path / "sub").mkdir()
+
+		results = push(client, PROJECT, tmp_path, patterns=["sub"])
+
+		assert statuses(results) == {"sub": "unmatched_pattern"}
+
+	def test_a_repeated_pattern_is_reported_once(self, client, tmp_path):
+		results = push(client, PROJECT, tmp_path, patterns=["*.pfd", "*.pfd"])
+
+		assert [result.file_name for result in results] == ["*.pfd"]
 
 	def test_subdirectories_are_ignored(self, api, client, tmp_path):
 		"""A project's documents are a flat list, so recursing would collide names."""
@@ -289,8 +384,8 @@ class TestPush:
 
 		assert api.document_names(PROJECT) == []
 
-	def test_an_empty_directory_yields_no_results(self, client, tmp_path):
-		assert push(client, PROJECT, tmp_path) == []
+	def test_an_empty_directory_reports_the_pattern_and_nothing_else(self, client, tmp_path):
+		assert statuses(push(client, PROJECT, tmp_path)) == {"*.md": "unmatched_pattern"}
 
 	def test_push_stops_at_first_file_exceeding_capacity(self, api, client, tmp_path):
 		api.projects[PROJECT]["_search_threshold"] = 50
@@ -316,7 +411,7 @@ class TestPush:
 		(tmp_path / "top.md").write_text("shallow", encoding="utf-8")
 
 		with pytest.raises(InvalidPatternError) as exception_info:
-			push(client, PROJECT, tmp_path, pattern=pattern)
+			push(client, PROJECT, tmp_path, patterns=[pattern])
 
 		assert repr(pattern) in str(exception_info.value)
 		assert api.document_names(PROJECT) == []
@@ -326,9 +421,38 @@ class TestPush:
 		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
 
 		with pytest.raises(InvalidPatternError) as exception_info:
-			push(client, PROJECT, tmp_path, pattern=pattern)
+			push(client, PROJECT, tmp_path, patterns=[pattern])
 
 		assert repr(pattern) in str(exception_info.value)
+
+	def test_no_patterns_at_all_is_refused(self, client, tmp_path):
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+
+		with pytest.raises(InvalidPatternError) as exception_info:
+			push(client, PROJECT, tmp_path, patterns=[])
+
+		assert "empty" in str(exception_info.value)
+
+	def test_one_string_in_place_of_the_list_is_refused(self, api, client, tmp_path):
+		"""A string is a sequence of its characters, so `'*md'` would be read as the patterns `*`, `m`, and `d`, and the first of those sends the whole folder."""
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+		(tmp_path / "data.csv").write_text("a,b", encoding="utf-8")
+
+		with pytest.raises(TypeError) as exception_info:
+			push(client, PROJECT, tmp_path, patterns="*md")
+
+		assert repr("*md") in str(exception_info.value)
+		assert api.document_names(PROJECT) == []
+
+	def test_one_bad_pattern_among_several_refuses_the_whole_push(self, api, client, tmp_path):
+		"""A push that sent the good patterns' files and then raised would leave the caller guessing at what went."""
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+
+		with pytest.raises(InvalidPatternError) as exception_info:
+			push(client, PROJECT, tmp_path, patterns=["*.md", "sub/*.md"])
+
+		assert repr("sub/*.md") in str(exception_info.value)
+		assert api.document_names(PROJECT) == []
 
 	@pytest.mark.skipif(sys.platform == "win32", reason="creating a symbolic link needs a privilege on Windows")
 	def test_a_symbolic_link_out_of_the_folder_is_not_uploaded(self, api, client, tmp_path):
@@ -539,7 +663,7 @@ class TestPush:
 		"""With no file to preview there is nothing to project, so the stats and any calibration fetch are not worth a request."""
 		results = push(client, PROJECT, tmp_path, options=PushOptions(dry_run=True))
 
-		assert results == []
+		assert statuses(results) == {"*.md": "unmatched_pattern"}
 		assert all("kb/stats" not in path for _, path in api.log)
 
 	def test_a_dry_run_does_not_fetch_a_document_whose_empty_text_is_already_listed(self, api, client, tmp_path):
@@ -715,7 +839,7 @@ class TestPushUploads:
 	def test_a_pdf_is_pushed_as_an_upload(self, api, client, tmp_path):
 		(tmp_path / "report.pdf").write_bytes(b"%PDF-1.4\n\xe2\x80\x8b binary")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert result.status == "created"
 		assert result.kind == "upload"
@@ -729,7 +853,7 @@ class TestPushUploads:
 		"""The name says what the web UI would make of it; a PDF small enough to be pure ASCII is still a PDF."""
 		(tmp_path / "tiny.pdf").write_bytes(b"%PDF-1.4 ascii only")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.pdf"])
 
 		assert result.kind == "upload"
 		assert api.document_names(PROJECT) == []
@@ -739,7 +863,7 @@ class TestPushUploads:
 		"""Not from the platform's mime table, which differs between machines and would make the same folder push differently from a bare container."""
 		(tmp_path / name).write_bytes(b"\xff\xd8 bytes")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert (result.status, result.kind) == ("created", "upload"), name
 
@@ -747,7 +871,7 @@ class TestPushUploads:
 		"""What the web UI makes of an SVG is unobserved, and it is UTF-8 text, so it takes the path every unobserved kind takes."""
 		(tmp_path / "diagram.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert (result.status, result.kind) == ("created", "document")
 		assert api.document_names(PROJECT) == ["diagram.svg"]
@@ -755,7 +879,7 @@ class TestPushUploads:
 	def test_an_image_is_pushed_as_an_upload_with_its_content_type(self, api, client, tmp_path):
 		(tmp_path / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.png")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.png"])
 
 		assert (result.status, result.kind) == ("created", "upload")
 		assert client.list_uploaded_files(PROJECT)[0].file_kind == "image"
@@ -765,7 +889,7 @@ class TestPushUploads:
 		"""Only PDFs and a handful of image formats go up as uploads, so anything else has to be text, other image formats included; guessing what the web UI would do with one is not the client's job."""
 		(tmp_path / name).write_bytes(b"PK\x03\x04\xff\xfe")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert result.status == "error"
 		assert result.detail is not None and "UTF-8" in result.detail
@@ -776,7 +900,7 @@ class TestPushUploads:
 		api.add_upload(PROJECT, "report.pdf", b"%PDF same")
 		(tmp_path / "report.pdf").write_bytes(b"%PDF same")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.pdf"])
 
 		assert (result.status, result.kind) == ("unchanged", "upload")
 		assert upload_posts(api) == []
@@ -785,7 +909,7 @@ class TestPushUploads:
 		api.add_upload(PROJECT, "report.pdf", b"%PDF remote")
 		(tmp_path / "report.pdf").write_bytes(b"%PDF local copy")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.pdf"])
 
 		assert result.status == "skipped_exists"
 		assert result.detail is not None and "overwrite" in result.detail
@@ -795,7 +919,7 @@ class TestPushUploads:
 		api.add_upload(PROJECT, "report.pdf", b"%PDF remote")
 		(tmp_path / "report.pdf").write_bytes(b"%PDF loca1!")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.pdf"])
 
 		assert result.status == "skipped_exists"
 		assert [entry for entry in api.log if "document_pdf" in entry[1]], "the same size is not the same bytes"
@@ -809,7 +933,7 @@ class TestPushUploads:
 			saved.append((file_name, data))
 			return f"/backups/{file_name}"
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(overwrite=True, backup_bytes=backup_bytes))
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.pdf"], options=PushOptions(overwrite=True, backup_bytes=backup_bytes))
 
 		assert (result.status, result.kind, result.backup_path) == ("replaced", "upload", "/backups/report.pdf")
 		assert saved == [("report.pdf", b"%PDF remote")]
@@ -823,7 +947,7 @@ class TestPushUploads:
 		(tmp_path / "photo.png").write_bytes(b"old png")
 
 		for options in (PushOptions(), PushOptions(overwrite=True, backup_bytes=lambda file_name, data: "/backups/photo.png")):
-			[result] = push(client, PROJECT, tmp_path, pattern="*.png", options=options)
+			[result] = push(client, PROJECT, tmp_path, patterns=["*.png"], options=options)
 
 			assert result.status == "skipped_exists"
 			assert result.detail is not None and "original" in result.detail and "overwrite" not in result.detail
@@ -834,7 +958,7 @@ class TestPushUploads:
 	def test_the_stored_name_is_reported_when_the_server_changes_it(self, api, client, tmp_path):
 		(tmp_path / "Coffeevore (scaled).png").write_bytes(b"\x89PNG")
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.png")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.png"])
 
 		assert result.file_name == "Coffeevore (scaled).png"
 		assert result.status == "created"
@@ -851,7 +975,7 @@ class TestPushUploads:
 			saved.append(file_name)
 			return f"/backups/{file_name}"
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(overwrite=True, backup_bytes=backup_bytes))
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.pdf"], options=PushOptions(overwrite=True, backup_bytes=backup_bytes))
 
 		assert result.status == "created"
 		assert saved == []
@@ -862,7 +986,7 @@ class TestPushUploads:
 		(tmp_path / "report 1.pdf").write_bytes(b"%PDF first")
 		(tmp_path / "report (1).pdf").write_bytes(b"%PDF second, longer")
 
-		results = push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(overwrite=True))
+		results = push(client, PROJECT, tmp_path, patterns=["*.pdf"], options=PushOptions(overwrite=True))
 
 		assert statuses(results) == {"report (1).pdf": "created", "report 1.pdf": "created"}
 		assert sorted(client.download_uploaded_file(upload) for upload in client.list_uploaded_files(PROJECT)) == [b"%PDF first", b"%PDF second, longer"]
@@ -873,7 +997,7 @@ class TestPushUploads:
 		api.projects[PROJECT]["_search_threshold"] = search_threshold
 		(tmp_path / "report.pdf").write_bytes(data)
 
-		[result] = push(client, PROJECT, tmp_path, pattern="*.pdf")
+		[result] = push(client, PROJECT, tmp_path, patterns=["*.pdf"])
 
 		assert result.status == "created"
 		assert result.detail is not None and "capacity was not checked" in result.detail
@@ -883,7 +1007,7 @@ class TestPushUploads:
 		"""The preview already fetched the listing for its refusal wording; the upload path must reuse it rather than ask again."""
 		(tmp_path / "report.pdf").write_bytes(b"%PDF report")
 
-		push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(dry_run=True))
+		push(client, PROJECT, tmp_path, patterns=["*.pdf"], options=PushOptions(dry_run=True))
 
 		assert len([path for _, path in api.log if path.endswith("/files")]) == 1
 
@@ -892,7 +1016,7 @@ class TestPushUploads:
 		(tmp_path / "old.pdf").write_bytes(b"%PDF changed")
 		(tmp_path / "new.pdf").write_bytes(b"%PDF new")
 
-		results = push(client, PROJECT, tmp_path, pattern="*.pdf", options=PushOptions(overwrite=True, dry_run=True))
+		results = push(client, PROJECT, tmp_path, patterns=["*.pdf"], options=PushOptions(overwrite=True, dry_run=True))
 
 		assert statuses(results) == {"new.pdf": "created", "old.pdf": "replaced"}
 		assert upload_posts(api) == []
@@ -905,7 +1029,7 @@ class TestPushUploads:
 		(tmp_path / "a.pdf").write_bytes(b"%PDF" + b"a" * 100)
 		(tmp_path / "b.md").write_text("after", encoding="utf-8")
 
-		results = push(client, PROJECT, tmp_path, pattern="*")
+		results = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert statuses(results) == {"a.pdf": "refused_full", "b.md": "skipped_full"}
 		assert results[0].kind == "upload"
@@ -918,7 +1042,7 @@ class TestPushUploads:
 		(tmp_path / "report.pdf").write_bytes(b"%PDF report")
 		api.fail_once("GET", "/files$", ApiError("claude.ai returned HTTP 500.", status=500))
 
-		results = push(client, PROJECT, tmp_path, pattern="*")
+		results = push(client, PROJECT, tmp_path, patterns=["*"])
 
 		assert statuses(results) == {"notes.md": "created", "report.pdf": "error"}
 		assert "could not be listed" in results[1].detail
@@ -938,7 +1062,7 @@ class TestPushUploads:
 		api.add_project("organization-1", "project-2", name="copy")
 
 		pull(client, PROJECT, tmp_path)
-		results = push(client, "project-2", tmp_path, pattern="*")
+		results = push(client, "project-2", tmp_path, patterns=["*"])
 
 		assert statuses(results) == {"notes.md": "created", "report.pdf": "created"}
 		assert api.content_of("project-2", "notes.md") == ["hello"]

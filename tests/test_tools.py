@@ -108,6 +108,22 @@ class TestRegistration:
 		assert "an image" not in description, "the table is five kinds, not every image format, and saying otherwise sends a TIFF down the text path unannounced"
 		assert "*.md" in description, "a model calling with the default pattern would otherwise take the PDFs in the folder for pushed"
 
+	async def test_push_takes_its_patterns_as_a_list(self, server):
+		"""The model reads the schema before the description, so the shape has to say a list on its own."""
+		properties = {tool.name: tool for tool in await server.list_tools()}["push_documents"].input_schema["properties"]
+
+		assert "pattern" not in properties
+		assert properties["patterns"]["type"] == "array"
+		assert properties["patterns"]["items"] == {"type": "string"}
+		assert properties["patterns"]["default"] == ["*.md"]
+
+	async def test_the_push_description_spells_the_argument_the_schema_has(self, server):
+		"""`pattern='*'` was the advice while the argument was one string, and a call that still follows it is refused."""
+		description = {tool.name: tool for tool in await server.list_tools()}["push_documents"].description
+
+		assert "patterns=['*']" in description
+		assert "pattern=" not in description
+
 
 class TestProjectResolution:
 	async def test_the_named_project_is_the_one_acted_on(self, api, server):
@@ -704,7 +720,7 @@ class TestPushDocs:
 		source.mkdir()
 		(source / "report.pdf").write_bytes(b"%PDF the new bytes")
 
-		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(source), pattern="*.pdf", overwrite=True)
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(source), patterns=["*.pdf"], overwrite=True)
 
 		assert result["summary"] == {"replaced": 1}
 		[row] = result["results"]
@@ -741,9 +757,47 @@ class TestPushDocs:
 		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
 
 		with pytest.raises(ToolError) as exception_info:
-			await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), pattern=pattern)
+			await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), patterns=[pattern])
 
 		assert repr(pattern) in str(exception_info.value)
+
+	async def test_no_patterns_at_all_is_a_tool_error(self, server, tmp_path):
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), patterns=[])
+
+		assert "empty" in str(exception_info.value)
+
+	async def test_the_retired_pattern_argument_is_refused_by_name(self, api, server, tmp_path):
+		"""Left to the SDK, an argument the schema lacks is dropped without a word, and the default `*.md` would then send the Markdown nobody asked for in place of the PDFs somebody did."""
+		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
+		(tmp_path / "report.pdf").write_bytes(b"%PDF report")
+
+		with pytest.raises(ToolError) as exception_info:
+			await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), pattern="*.pdf")
+
+		assert "patterns=['*.pdf']" in str(exception_info.value)
+		assert api.document_names(PROJECT) == []
+
+	async def test_several_patterns_go_up_in_one_push(self, api, server, tmp_path):
+		(tmp_path / "a.md").write_text("hello", encoding="utf-8")
+		(tmp_path / "b.pdf").write_bytes(b"%PDF b")
+		(tmp_path / "c.txt").write_text("nope", encoding="utf-8")
+
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), patterns=["*.md", "*.pdf"])
+
+		assert {row["file_name"]: row["kind"] for row in result["results"]} == {"a.md": "document", "b.pdf": "upload"}
+		assert result["summary"] == {"created": 2}
+		assert "warning" not in result
+
+	async def test_an_unmatched_pattern_is_lifted_into_warning(self, api, server, tmp_path):
+		"""The row says so too, but the model is told to relay `warning`, and a mistyped pattern is what the user has to hear about."""
+		(tmp_path / "a.md").write_text("hello", encoding="utf-8")
+
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), patterns=["*.md", "*.pfd"])
+
+		assert result["summary"] == {"unmatched_pattern": 1, "created": 1}
+		assert repr("*.pfd") in result["warning"]
+		assert {row["file_name"]: row["kind"] for row in result["results"]} == {"*.pfd": "pattern", "a.md": "document"}
 
 	async def test_a_dry_run_without_stats_lifts_the_caveat_into_warning(self, api, server, tmp_path):
 		"""Every row says the stop was not previewed, but the model is told to relay `warning`, so the caveat has to be there too."""
@@ -775,7 +829,7 @@ class TestPushDocs:
 		(tmp_path / "b.pdf").write_bytes(b"%PDF b")
 		(tmp_path / "c.md").write_text("c" * 100, encoding="utf-8")
 
-		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), pattern="*", dry_run=True)
+		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path), patterns=["*"], dry_run=True)
 
 		assert result["summary"] == {"created": 2, "refused_full": 1}
 		assert result["warning"].count("not previewed") == 1

@@ -11,7 +11,7 @@ Neither deletes anything the other side is missing, and neither overwrites diffe
 
 import math
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path, PurePath
@@ -58,7 +58,7 @@ class FileResult:
 	local_path: str | None = None
 	detail: str | None = None
 	backup_path: str | None = None
-	# "document" for a text document, "upload" for a file uploaded through the web UI, which comes down as bytes.
+	# "document" for a text document, "upload" for a file uploaded through the web UI, which comes down as bytes, and "pattern" for a push pattern that matched no file, whose row stands for no file at all.
 	kind: str = "document"
 	# What the model must be told about this row, which the server lifts into the result's top-level warning; not part of the row as serialized.
 	warning: str | None = None
@@ -429,7 +429,7 @@ def push(
 	project_id: str,
 	source_directory: Path | str,
 	*,
-	pattern: str = "*.md",
+	patterns: Sequence[str] = ("*.md",),
 	options: PushOptions | None = None,
 ) -> list[FileResult]:
 	"""Send `source_directory`'s files into the project: a PDF, PNG, JPEG, GIF, or WebP file as an upload, the way the web UI adds one, and everything else as a text document.
@@ -437,8 +437,10 @@ def push(
 	The name decides the kind, since that is what the web UI has been seen going by (observed 2026-09-26: a PNG became an upload, an HTML file and a plain text file became documents), so a file of any other kind that is not UTF-8 text is an error rather than a guess.
 	Never deletes remote documents that are missing locally: a partial folder must not prune a shared project.
 	Matches only the files directly inside the folder, and refuses a pattern that reaches elsewhere, because a project's documents are a flat list and recursing would collide names.
+	Several patterns make one push: their matches are merged, each file once and in name order, before anything is sent, so the capacity gate and a dry run judge the whole set rather than one pattern's share of it.
+	A pattern that matches no file is reported as a row of its own, so a mistyped one does not go unnoticed behind what the others matched.
 	A file that resolves outside the folder, such as a symbolic link to somewhere else on disk, is reported rather than uploaded.
-	A file whose name starts with a period is reported rather than sent unless the pattern starts with one too, the way a shell expands `*`, so a `.env` in the folder does not ride along with `pattern='*'`.
+	A file whose name starts with a period is reported rather than sent unless a pattern that matches it starts with one too, the way a shell expands `*`, so a `.env` in the folder does not ride along with `patterns=['*']`.
 	A dry run previews where the real push would stop, from estimated token counts, since it writes nothing to measure.
 	A folder that exists but cannot be read raises, as a missing one does, rather than pushing nothing.
 	"""
@@ -451,10 +453,10 @@ def push(
 	if options is None:
 		options = PushOptions()
 
-	matching_paths, hidden_paths = _without_hidden(_matching_files(source, pattern), pattern)
+	selection = _selected(source, patterns)
 	documents = client.list_documents(project_id)
 	preview = None
-	if matching_paths:
+	if selection.paths:
 		preview = _Preview.of(client, project_id, documents, options)
 
 	known_uploads = None
@@ -463,7 +465,7 @@ def push(
 
 	context = _PushContext(client, project_id, source.resolve(), by_name(documents), options, preview, _RemoteUploads(client, project_id, known_uploads))
 
-	return [_hidden_row(path) for path in hidden_paths] + _push_all(context, matching_paths)
+	return [_unmatched_row(pattern, source) for pattern in selection.unmatched] + [_hidden_row(path) for path in selection.hidden] + _push_all(context, selection.paths)
 
 
 def _ensure_readable(source: Path) -> None:
@@ -475,6 +477,45 @@ def _ensure_readable(source: Path) -> None:
 		entry = next(entries, None)
 		if entry is not None:
 			entry.stat(follow_symlinks=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _Selection:
+	"""What a push's patterns pick out of the source folder."""
+
+	# The files to send, each once and in name order, whichever patterns matched them.
+	paths: list[Path]
+	# The hidden files that no pattern matching them asked for, which are reported rather than sent.
+	hidden: list[Path]
+	# The patterns that matched no file, in the order given.
+	unmatched: list[str]
+
+
+def _selected(source: Path, patterns: Sequence[str]) -> _Selection:
+	"""The files `patterns` pick out of `source`, merged before anything is sent so the capacity gate and a dry run judge one set.
+
+	Each pattern is checked and matched on its own, so one that reaches outside the folder refuses the whole push before any file goes.
+	Each answers for hidden files by itself too: a hidden file is sent when any pattern that matched it asked for it, and is held back otherwise.
+	"""
+	if isinstance(patterns, str):
+		raise TypeError(f"patterns takes a list of file name patterns, not the one string {patterns!r}, which would be read one character at a time; pass [{patterns!r}].")
+
+	if not patterns:
+		raise InvalidPatternError("patterns is empty; pass at least one file name pattern such as '*.md'.")
+
+	paths: set[Path] = set()
+	hidden: set[Path] = set()
+	unmatched = []
+	for pattern in dict.fromkeys(patterns):
+		matches = _matching_files(source, pattern)
+		if not matches:
+			unmatched.append(pattern)
+
+		visible, held_back = _without_hidden(matches, pattern)
+		paths.update(visible)
+		hidden.update(held_back)
+
+	return _Selection(sorted(paths), sorted(hidden - paths), unmatched)
 
 
 def _matching_files(source: Path, pattern: str) -> list[Path]:
@@ -512,6 +553,15 @@ def _without_hidden(paths: list[Path], pattern: str) -> tuple[list[Path], list[P
 			visible.append(path)
 
 	return visible, hidden
+
+
+def _unmatched_row(pattern: str, source: Path) -> FileResult:
+	"""A row for a pattern that matched no file, named after the pattern because there is no file to name it after.
+
+	It carries a warning too, since a typo in one pattern would otherwise go unnoticed behind what the others matched.
+	"""
+	message = f"pattern {pattern!r} matched no file directly inside {source}."
+	return FileResult(pattern, "unmatched_pattern", detail=message, kind="pattern", warning=message)
 
 
 def _hidden_row(path: Path) -> FileResult:

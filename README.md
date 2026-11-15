@@ -15,7 +15,7 @@ This server closes that gap, so notes written in Cowork can be read, edited, and
 
 ## Status
 
-All seventeen tools are implemented and covered by 572 tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
+All tools are implemented and covered by automated tests, and the read-and-write path for text documents, projects, and scheduled tasks has been verified against the real API — `tests/live/test_contract.py` round-trips a document through create, read, replace, and delete, a project through create, read, update, and delete, and a scheduled task through create, read, schedule, pause, and delete.
 Files uploaded through the web UI, such as PDFs, are listed, pulled, pushed, and backed up before a deletion; the listing and `pull_documents` have run against real PDFs, and adding and removing an upload against a real PNG, but the pre-delete backup of uploads has only run against the in-memory fake (see To do).
 That live suite also checks the derived `chat_project_id` against what claude.ai really sends, which is the one thing the offline tests cannot prove: there, both sides of the comparison come from this repository's own encoder.
 
@@ -101,7 +101,7 @@ Other installation methods (Windows, Homebrew, pip) are in [uv's installation do
 Get the session key from claude.ai in a browser: DevTools → Application → Cookies → `sessionKey` (starts with `sk-ant-sid02-`, or `sid01-` on older accounts).
 It expires periodically; when a tool reports a 401, copy a fresh one.
 
-Put it in an env file anywhere (`.env.example` lists every key the server reads):
+Put it in an env file anywhere (`.env.example` lists the server settings and live-test options):
 
 ```bash
 CLAUDE_PROJECTS_SESSION_KEY=sk-ant-sid02-...

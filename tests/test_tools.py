@@ -650,7 +650,7 @@ class TestDeleteDoc:
 
 
 class TestPullDocs:
-	async def test_writes_files_and_summarises(self, api, server, tmp_path):
+	async def test_writes_files_and_summarizes(self, api, server, tmp_path):
 		api.add_document(PROJECT, "notes.md", "hello")
 		destination = tmp_path / "out"
 
@@ -680,7 +680,7 @@ class TestPullDocs:
 
 
 class TestPushDocs:
-	async def test_uploads_and_summarises(self, api, server, tmp_path):
+	async def test_uploads_and_summarizes(self, api, server, tmp_path):
 		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
 
 		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path))

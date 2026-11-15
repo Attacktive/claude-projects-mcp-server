@@ -1,15 +1,10 @@
 """Translating a project uuid into the id the scheduled-task API answers with.
 
-The two halves of that API speak different id spaces: a task is created with a `project_uuid`,
-but every task read back names its project as a `chat_project_id` — `claude_proj_01` followed by
-the uuid in base58, padded to a fixed width. Nothing in the API maps between them, and the
-listing cannot be filtered server-side, so a caller asking for one project's tasks has no way
-through except to compute the id and match on it.
+The two halves of that API speak different id spaces: a task is created with a `project_uuid`, but every task read back names its project as a `chat_project_id` — `claude_proj_01` followed by the uuid in base58, padded to a fixed width.
+Nothing in the API maps between them, and the listing cannot be filtered server-side, so a caller asking for one project's tasks has no way through except to compute the id and match on it.
 
-This is a reimplementation of an undocumented encoding, so it is kept in one small module that
-`test_identifiers.py` can pin down against the real pair captured on 2026-08-08. Decoding refuses
-anything it does not recognise rather than guessing: a wrong answer here would silently attach a
-task to the wrong project.
+This is a reimplementation of an undocumented encoding, so it is kept in one small module that `test_identifiers.py` can pin down against the real pair captured on 2026-08-08.
+Decoding refuses anything it does not recognize rather than guessing: a wrong answer here would silently attach a task to the wrong project.
 """
 
 import uuid as uuid_module

@@ -1,4 +1,4 @@
-"""The MCP surface: seventeen tools over claude.ai / Claude Cowork projects, their documents, and their scheduled tasks.
+"""The MCP surface over claude.ai / Claude Cowork projects, their documents, and their scheduled tasks.
 
 `build_server` is the injection seam.
 It knows nothing about how it will be served, so adding a Streamable HTTP entrypoint later is a new `main`, not a refactor.
@@ -21,45 +21,31 @@ from .errors import BackupError, ClaudeProjectsError, NotFoundError
 from .models import Document, KnowledgeStats, Project, UploadedFile
 from .results import with_warning
 from .scheduled import register as register_scheduled_tools
-from .sync import FileResult, PushOptions, pull, push, summarise
+from .sync import FileResult, PushOptions, pull, push, summarize
 from .transport import CurlCffiTransport
 
 _INSTRUCTIONS = """Read and write Claude Cowork / claude.ai projects and their knowledge documents.
 
-These are shared team documents with no server-side undo, so writes are deliberately
-cautious: replacing an existing document requires overwrite=true, and the previous
-content is backed up locally first. Deleting a whole project takes every document in it,
-so delete_project needs the project's name typed back and backs every document and upload up first.
+These are shared team documents with no server-side undo, so writes are deliberately cautious: replacing an existing document requires overwrite=true, and the previous content is backed up locally first.
+Deleting a whole project takes every document in it, so delete_project needs the project's name typed back and backs every document and upload up first.
 
-For more than a couple of edits, prefer pull_documents to a folder, edit the files with normal
-tools, then push_documents back — it is far cheaper than moving whole documents through tool
-calls one at a time.
+For more than a couple of edits, prefer pull_documents to a folder, edit the files with normal tools, then push_documents back — it is far cheaper than moving whole documents through tool calls one at a time.
 
-Files uploaded through the web UI, such as PDFs, count toward the project's knowledge size
-and are a different kind of thing from a document: list_documents shows them under
-uploaded_files, pull_documents copies them down as bytes, delete_project backs them up, and
-push_documents sends a PDF, PNG, JPEG, GIF, or WebP file in the folder up as one, the way the
-web UI adds a file.
-Nothing here can compact one. A deletion stops with nothing deleted if any upload
-cannot be backed up, and the error names the file and why. An image offers no original to
-download, so it can be neither pulled nor replaced; a pull-and-push copy carries everything
-but images.
+Files uploaded through the web UI, such as PDFs, count toward the project's knowledge size and are a different kind of thing from a document: list_documents shows them under uploaded_files, pull_documents copies them down as bytes, delete_project backs them up, and push_documents sends a PDF, PNG, JPEG, GIF, or WebP file in the folder up as one, the way the web UI adds a file.
+Nothing here can compact one.
+A deletion stops with nothing deleted if any upload cannot be backed up, and the error names the file and why.
+An image offers no original to download, so it can be neither pulled nor replaced; a pull-and-push copy carries everything but images.
 
-A project's knowledge has two lines, both reported by list_documents: a search threshold, past
-which Claude in the web UI retrieves from the knowledge instead of reading all of it, and a
-maximum, past which the web UI refuses uploads.
-The API enforces neither, so write_document and push_documents do: a write that would grow
-the project past a line is undone and refused, naming the documents most worth compacting
-and the largest uploads, which only the web UI can remove.
+A project's knowledge has two lines, both reported by list_documents: a search threshold, past which Claude in the web UI retrieves from the knowledge instead of reading all of it, and a maximum, past which the web UI refuses uploads.
+The API enforces neither, so write_document and push_documents do: a write that would grow the project past a line is undone and refused, naming the documents most worth compacting and the largest uploads, which only the web UI can remove.
 allow_search_mode=true accepts the threshold; nothing accepts the maximum.
 
-Scheduled tasks run prompts against a project on a cron schedule. Those schedules are in UTC,
-not local time, and pausing a task with enabled=false is nearly always better than deleting it.
+Scheduled tasks run prompts against a project on a cron schedule.
+Those schedules are in UTC, not local time, and pausing a task with enabled=false is nearly always better than deleting it.
 Nothing here can start a run: setting the schedule is the whole job.
 
-A result that carries a `warning` key is saying something the user needs to hear — a duplicate
-name, a leftover copy, a file name with no extension. The key is only present when there is
-something to say; relay it to the user verbatim rather than summarising past it."""
+A result that carries a `warning` key is saying something the user needs to hear — a duplicate name, a leftover copy, a file name with no extension.
+The key is only present when there is something to say; relay it to the user verbatim rather than summarizing past it."""
 
 
 def _version() -> str:
@@ -537,7 +523,7 @@ def _register_pull_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 		return {
 			"project_id": project_id,
 			"results": [_result_dict(result) for result in results],
-			"summary": summarise(results),
+			"summary": summarize(results),
 		}
 
 
@@ -593,7 +579,7 @@ def _register_push_documents(server: MCPServer, client: ClaudeProjectsClient, ba
 				"project_id": project_id,
 				"dry_run": dry_run,
 				"results": [_result_dict(result) for result in results],
-				"summary": summarise(results),
+				"summary": summarize(results),
 			},
 			_push_warning(results),
 		)

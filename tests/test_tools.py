@@ -84,7 +84,7 @@ class TestRegistration:
 
 	async def test_every_tool_that_can_warn_asks_for_the_warning_to_be_relayed(self, server):
 		"""The model is the only reader a tool result is guaranteed to have, so the description has to say what to do with a warning."""
-		can_warn = {"list_documents", "read_document", "write_document", "rename_document", "push_documents", "list_scheduled_tasks", "create_scheduled_task", "update_scheduled_task", "delete_scheduled_task"}
+		can_warn = {"delete_project", "delete_document", "list_documents", "read_document", "write_document", "rename_document", "push_documents", "list_scheduled_tasks", "create_scheduled_task", "update_scheduled_task", "delete_scheduled_task"}
 		tools = {tool.name: tool for tool in await server.list_tools()}
 
 		for name in can_warn:
@@ -608,6 +608,24 @@ class TestRenameDocument:
 
 
 class TestDeleteDoc:
+	async def test_reports_a_document_deleted_by_someone_else(self, api, client, server, monkeypatch):
+		uuid = api.add_document(PROJECT, "notes.md", "back this up")
+		delete = client.delete_document
+
+		def delete_after_teammate(project_id, document_id):
+			delete(project_id, document_id)
+			return delete(project_id, document_id)
+
+		monkeypatch.setattr(client, "delete_document", delete_after_teammate)
+
+		result = await call(server, "delete_document", project_id=PROJECT, document="notes.md")
+
+		assert result["deleted"] == []
+		assert result["already_gone"] == [{"uuid": uuid, "file_name": "notes.md"}]
+		assert "already gone" in result["warning"]
+		assert Path(result["backup_path"]).read_text(encoding="utf-8") == "back this up"
+		assert api.document_names(PROJECT) == []
+
 	async def test_deletes_by_uuid(self, api, server):
 		uuid = api.add_document(PROJECT, "notes.md", "hello")
 
@@ -895,6 +913,24 @@ class TestProjectTools:
 
 		assert PROJECT not in api.projects
 		assert result["deleted"]["uuid"] == PROJECT
+
+	async def test_reports_a_project_deleted_by_someone_else(self, api, client, server, monkeypatch):
+		api.add_document(PROJECT, "notes.md", "back this up")
+		delete = client.delete_project
+
+		def delete_after_teammate(project_id):
+			delete(project_id)
+			return delete(project_id)
+
+		monkeypatch.setattr(client, "delete_project", delete_after_teammate)
+
+		result = await call(server, "delete_project", project_id=PROJECT, confirm_name="팀 지식 베이스")
+
+		assert result["deleted"] is None
+		assert result["already_gone"]["uuid"] == PROJECT
+		assert "already gone" in result["warning"]
+		assert [Path(path).read_text(encoding="utf-8") for path in result["backup_paths"]] == ["back this up"]
+		assert PROJECT not in api.projects
 
 	async def test_every_document_is_backed_up_before_the_project_goes(self, api, server, tmp_path):
 		api.add_document(PROJECT, "notes.md", "hello")

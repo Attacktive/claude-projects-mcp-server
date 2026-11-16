@@ -211,7 +211,7 @@ def _register_update_project(server: MCPServer, client: ClaudeProjectsClient) ->
 def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
-		description="Delete a project and everything in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every text document and every file uploaded through the web UI is copied to the local backup directory first; if any of that fails, nothing is deleted. An upload with no downloadable original, such as an image, or one the listing gives no size for, blocks the deletion until it is removed in the web UI.",
+		description="Delete a project and everything in it. There is no server-side undo, so confirm_name must be set to the project's exact current name. Every text document and every file uploaded through the web UI is copied to the local backup directory first; if any of that fails, nothing is deleted. An upload with no downloadable original, such as an image, or one the listing gives no size for, blocks the deletion until it is removed in the web UI. Relay any `warning` verbatim; it reports a project that was already gone.",
 	)
 	def delete_project(project_id: str, confirm_name: str) -> dict:
 		with translated():
@@ -226,16 +226,20 @@ def _register_delete_project(server: MCPServer, client: ClaudeProjectsClient, ba
 			# Listed again once the documents are done, so an upload added meanwhile is backed up too rather than deleted off a stale list.
 			uploads = _uploads_to_back_up(client, project_id)
 			backup_paths.extend(str(path) for path in _backup_uploads(client, backups, project_id, uploads))
-			client.delete_project(project_id)
+			deleted = client.delete_project(project_id)
 
-		return {
-			"deleted": {
-				"uuid": project.uuid,
-				"name": project.name,
-				"organization_uuid": project.organization_uuid,
-			},
-			"backup_paths": backup_paths,
+		target = {
+			"uuid": project.uuid,
+			"name": project.name,
+			"organization_uuid": project.organization_uuid,
 		}
+		if not deleted:
+			return with_warning(
+				{"deleted": None, "already_gone": target, "backup_paths": backup_paths},
+				f"Project {project.name!r} ({project.uuid}) was already gone when deletion was requested. This call deleted nothing; the local backups were kept.",
+			)
+
+		return {"deleted": target, "backup_paths": backup_paths}
 
 
 def _find_duplicates(documents: list[Document]) -> list[str]:
@@ -505,7 +509,7 @@ def _register_rename_document(server: MCPServer, client: ClaudeProjectsClient, b
 def _register_delete_document(server: MCPServer, client: ClaudeProjectsClient, backups: BackupStore) -> None:
 	@server.tool(
 		annotations=ToolAnnotations(destructive_hint=True),
-		description="Delete a document, by uuid or by an unambiguous file name. The content is backed up locally first. A name shared by several documents is refused: pass the uuid to say which one.",
+		description="Delete a document, by uuid or by an unambiguous file name. The content is backed up locally first. A name shared by several documents is refused: pass the uuid to say which one. Relay any `warning` verbatim; it reports a document that was already gone.",
 	)
 	def delete_document(project_id: str, document: str) -> dict:
 		with translated():
@@ -514,7 +518,17 @@ def _register_delete_document(server: MCPServer, client: ClaudeProjectsClient, b
 				target = client.get_document(project_id, target.uuid)
 
 			backup_path = backups.save(project_id, target.file_name, target.content or "")
-			client.delete_document(project_id, target.uuid)
+			deleted = client.delete_document(project_id, target.uuid)
+
+		if not deleted:
+			return with_warning(
+				{
+					"deleted": [],
+					"already_gone": [{"uuid": target.uuid, "file_name": target.file_name}],
+					"backup_path": str(backup_path),
+				},
+				f"Document {target.file_name!r} ({target.uuid}) was already gone when deletion was requested. This call deleted nothing; the local backup was kept.",
+			)
 
 		return {
 			"deleted": [{"uuid": target.uuid, "file_name": target.file_name}],

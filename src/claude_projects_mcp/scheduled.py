@@ -67,14 +67,17 @@ def _task_dict(task: ScheduledTask) -> dict:
 class translated:
 	"""Turn a typed ClaudeProjectsError into the ToolError the model will actually read.
 
-	Duplicated from `server.py` rather than shared, because the two differ: this one also rewrites the API's bare "The request is invalid." into something a caller can act on, which is only ever about a cron expression here.
+	Duplicated from `server.py` rather than shared, because this one adds cron guidance to a rejected request only when the caller supplied a cron expression.
 	"""
+
+	def __init__(self, *, cron_expression: str | None = None):
+		self._has_cron = cron_expression is not None
 
 	def __exit__(self, exception_type, exception, traceback):
 		if exception is None:
 			return False
 
-		if isinstance(exception, ApiError) and exception.status == 400:
+		if isinstance(exception, ApiError) and exception.status == 400 and self._has_cron:
 			raise ToolError(f"claude.ai rejected the request: {exception} {_CRON_HELP}") from exception
 
 		if isinstance(exception, ClaudeProjectsError):
@@ -136,7 +139,7 @@ def _register_writing(server: MCPServer, client: ClaudeProjectsClient) -> None:
 		cron_expression: str | None = None,
 		model: str | None = None,
 	) -> dict:
-		with translated():
+		with translated(cron_expression=cron_expression):
 			created = client.create_scheduled_task(
 				project_id,
 				name,
@@ -162,7 +165,7 @@ def _register_writing(server: MCPServer, client: ClaudeProjectsClient) -> None:
 		if all(value is None for value in (name, prompt, cron_expression, enabled, model)):
 			raise ToolError("Nothing to update. Pass at least one of name, prompt, cron_expression, enabled, or model. Use get_scheduled_task to see the current values.")
 
-		with translated():
+		with translated(cron_expression=cron_expression):
 			updated = client.update_scheduled_task(
 				task_id,
 				name=name,

@@ -6,6 +6,7 @@ That boundary is what keeps the claude.ai-specific auth swappable if an official
 
 import json
 from collections.abc import Callable
+from threading import local
 from typing import Any, Literal, Protocol
 from urllib.parse import urljoin, urlsplit
 
@@ -97,9 +98,9 @@ class CurlCffiTransport:
 		self._session_key = session_key
 		self._base_url = base_url.rstrip("/")
 
-		# Whether this connection has ever got an answer from the API rather than from Cloudflare.
-		# Until it has, one challenge is treated as a cold start, not a verdict.
-		self._established = False
+		# curl_cffi gives each worker thread its own connection, so its cold-start state must be local to that thread too.
+		# Until the API has answered that connection, one challenge is treated as a cold start, not a verdict.
+		self._connection = local()
 		self._session = requests.Session(impersonate=impersonate)
 		self._session.headers.update(
 			{
@@ -125,7 +126,7 @@ class CurlCffiTransport:
 		try:
 			return send()
 		except CloudflareBlockedError:
-			if self._established:
+			if getattr(self._connection, "established", False):
 				raise
 
 			# Cloudflare challenges a share of cold connections regardless of what the request is (observed 2026-08-06: sometimes the opening GET, sometimes a POST).
@@ -198,7 +199,7 @@ class CurlCffiTransport:
 		self._raise_for_challenge(response)
 
 		# Past that check the API itself replied, even if it replied with an error, so the connection is proven and any later challenge is a real one rather than a cold start.
-		self._established = True
+		self._connection.established = True
 
 		self._raise_for_error(response)
 
@@ -213,7 +214,7 @@ class CurlCffiTransport:
 			return
 
 		# On a cold connection the first challenge never escapes — `request` retries it — so the cold message can honestly say "twice in a row".
-		if self._established:
+		if getattr(self._connection, "established", False):
 			raise CloudflareBlockedError(_CLOUDFLARE_HELP_ESTABLISHED.format(status=status))
 
 		raise CloudflareBlockedError(_CLOUDFLARE_HELP_COLD.format(status=status))

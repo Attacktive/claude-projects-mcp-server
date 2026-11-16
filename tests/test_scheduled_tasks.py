@@ -97,6 +97,33 @@ def test_a_missing_prompt_is_none_rather_than_a_crash():
 	assert ScheduledTask.parse(raw_task(job_config={"ccr": {}})).prompt is None
 
 
+@pytest.mark.parametrize("events", [1, {"unexpected": "event"}])
+def test_malformed_event_container_does_not_break_the_listing(events):
+	rows = [raw_task(job_config={"ccr": {"events": events}}), raw_task()]
+
+	tasks = ScheduledTask.parse_list({"data": rows})
+
+	assert len(tasks) == 2
+	assert tasks[0].prompt is None
+	assert tasks[1].prompt == "Summarise this week."
+
+
+@pytest.mark.parametrize("field", ["data", "message"])
+@pytest.mark.parametrize("value", ["unexpected", [1], 1, True])
+def test_malformed_prompt_nesting_reads_as_unknown(field, value):
+	data = value if field == "data" else {"message": value}
+	task = ScheduledTask.parse(raw_task(job_config={"ccr": {"events": [{"data": data}]}}))
+
+	assert task.prompt is None
+
+
+@pytest.mark.parametrize("context", ["unexpected", [1], 1, True])
+def test_malformed_session_context_reads_as_unknown(context):
+	task = ScheduledTask.parse(raw_task(job_config={"ccr": {"session_context": context}}))
+
+	assert task.model is None
+
+
 def test_an_absent_job_config_is_survivable():
 	raw = raw_task()
 	del raw["job_config"]

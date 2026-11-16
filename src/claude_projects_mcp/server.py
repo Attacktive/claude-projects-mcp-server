@@ -17,7 +17,7 @@ from pydantic.json_schema import SkipJsonSchema
 from .backup import BackupStore
 from .client import ClaudeProjectsClient, ReplaceResult, looks_like_uuid
 from .config import Settings
-from .errors import BackupError, ClaudeProjectsError, NotFoundError
+from .errors import BackupError, ClaudeProjectsError
 from .models import Document, KnowledgeStats, Project, UploadedFile
 from .results import with_warning
 from .scheduled import register as register_scheduled_tools
@@ -314,10 +314,7 @@ def _register_list_documents(server: MCPServer, client: ClaudeProjectsClient) ->
 	def list_documents(project_id: str) -> dict:
 		with translated():
 			documents = client.list_documents(project_id)
-			try:
-				stats = client.knowledge_stats(project_id)
-			except NotFoundError:
-				stats = None
+			stats, _ = client.try_knowledge_stats(project_id)
 
 			uploads, uploads_warning = _try_list_uploads(client, project_id)
 

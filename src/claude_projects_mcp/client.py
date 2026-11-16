@@ -15,7 +15,7 @@ from .identifiers import chat_project_id
 from .models import Document, KnowledgeStats, Organization, Project, ScheduledTask, UploadedFile
 from .transport import HttpMethod, Transport
 
-_UUID_LIKE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{4,}$")
+_UUID_LIKE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 _MAX_RATE_LIMIT_RETRIES = 3
 _DEFAULT_RETRY_DELAY = 2.0

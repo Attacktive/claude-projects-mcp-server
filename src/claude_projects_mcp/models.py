@@ -43,6 +43,14 @@ def _count_or_none(value: Any) -> int | None:
 	return None
 
 
+def _require_count(raw: Any, key: str, kind: str) -> int:
+	value = _count_or_none(_require(raw, key, kind))
+	if value is None:
+		raise ApiError(f"{kind} response field {key!r} must be a whole number. The claude.ai API shape may have changed.", status=0)
+
+	return value
+
+
 @dataclass(frozen=True, slots=True)
 class Organization:
 	uuid: str
@@ -122,9 +130,9 @@ class KnowledgeStats:
 	@classmethod
 	def parse(cls, raw: Any) -> Self:
 		return cls(
-			size=_require(raw, "knowledge_size", "KnowledgeStats"),
-			max_size=_require(raw, "max_knowledge_size", "KnowledgeStats"),
-			search_threshold=_require(raw, "project_knowledge_search_threshold", "KnowledgeStats"),
+			size=_require_count(raw, "knowledge_size", "KnowledgeStats"),
+			max_size=_require_count(raw, "max_knowledge_size", "KnowledgeStats"),
+			search_threshold=_require_count(raw, "project_knowledge_search_threshold", "KnowledgeStats"),
 			search_mode=bool(_require(raw, "use_project_knowledge_search", "KnowledgeStats")),
 		)
 
@@ -235,11 +243,18 @@ def _prompt_of(ccr: Any) -> str | None:
 
 	It sits four levels down in a replayed event log rather than in a field of its own, so every step is treated as optional: a task whose prompt cannot be found is still a task worth listing, and raising here would make the whole listing fail over one odd row.
 	"""
-	events = ccr.get("events") or []
-	if not events or not isinstance(events[0], dict):
+	events = ccr.get("events")
+	if not isinstance(events, list) or not events or not isinstance(events[0], dict):
 		return None
 
-	message = (events[0].get("data") or {}).get("message") or {}
+	data = events[0].get("data")
+	if not isinstance(data, dict):
+		return None
+
+	message = data.get("message")
+	if not isinstance(message, dict):
+		return None
+
 	content = message.get("content")
 
 	if isinstance(content, str):
@@ -283,6 +298,7 @@ class ScheduledTask:
 		ccr = job_config.get("ccr") if isinstance(job_config, dict) else None
 		if not isinstance(ccr, dict):
 			ccr = {}
+		session_context = ccr.get("session_context")
 
 		return cls(
 			id=task_id,
@@ -296,7 +312,7 @@ class ScheduledTask:
 			created_at=raw.get("created_at"),
 			updated_at=raw.get("updated_at"),
 			chat_project_id=raw.get("chat_project_id"),
-			model=(ccr.get("session_context") or {}).get("model"),
+			model=session_context.get("model") if isinstance(session_context, dict) else None,
 		)
 
 	@classmethod

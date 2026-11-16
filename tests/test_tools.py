@@ -152,6 +152,16 @@ class TestListProjects:
 
 
 class TestListDocs:
+	async def test_stats_failure_keeps_the_document_listing_with_a_warning(self, api, server):
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.fail_once("GET", r"/kb/stats$", ApiError("claude.ai returned HTTP 502.", status=502))
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert [document["file_name"] for document in result["documents"]] == ["notes.md"]
+		assert "knowledge" not in result
+		assert "Capacity was not checked" in result["warning"]
+
 	async def test_lists_documents(self, api, server):
 		api.add_document(PROJECT, "notes.md", "hello")
 

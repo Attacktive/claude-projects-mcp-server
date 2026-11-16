@@ -11,6 +11,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from claude_projects_mcp.client import ClaudeProjectsClient
 from claude_projects_mcp.config import Settings
+from claude_projects_mcp.errors import ApiError
 from claude_projects_mcp.server import build_server
 
 from .conftest import ORGANIZATION, call
@@ -113,6 +114,16 @@ class TestReading:
 
 
 class TestCreating:
+	@pytest.mark.parametrize("cron", [None, "bad cron"])
+	async def test_api_error_keeps_its_detail_and_only_explains_a_sent_cron(self, server, scheduled_api, cron):
+		scheduled_api.fail_once("POST", "/scheduled_tasks$", ApiError("claude.ai returned HTTP 400.", status=400, body="The request is invalid."))
+
+		with pytest.raises(ToolError) as error:
+			await call(server, "create_scheduled_task", project_id=PROJECT_UUID, name="Digest", prompt="Hello", cron_expression=cron)
+
+		assert "The request is invalid." in str(error.value)
+		assert ("five" in str(error.value)) is (cron is not None)
+
 	async def test_a_manual_task_is_created(self, server):
 		result = await call(
 			server,
@@ -180,6 +191,17 @@ class TestCreating:
 
 
 class TestUpdating:
+	@pytest.mark.parametrize("changes", [{"name": "After"}, {"enabled": False}, {"cron_expression": "bad cron"}])
+	async def test_api_error_keeps_its_detail_and_only_explains_a_sent_cron(self, server, scheduled_api, changes):
+		task_id = scheduled_api.add_scheduled_task(ORGANIZATION, name="Before", project_uuid=PROJECT_UUID)
+		scheduled_api.fail_once("PATCH", "/scheduled_tasks/", ApiError("claude.ai returned HTTP 400.", status=400, body="The request is invalid."))
+
+		with pytest.raises(ToolError) as error:
+			await call(server, "update_scheduled_task", task_id=task_id, **changes)
+
+		assert "The request is invalid." in str(error.value)
+		assert ("five" in str(error.value)) is ("cron_expression" in changes)
+
 	async def test_a_name_can_be_changed_alone(self, server, scheduled_api):
 		task_id = scheduled_api.add_scheduled_task(ORGANIZATION, name="Before", prompt="Original.", project_uuid=PROJECT_UUID)
 

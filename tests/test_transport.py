@@ -244,6 +244,7 @@ def test_500_is_an_api_error_carrying_the_status(transport, httpserver):
 
 	assert exception_info.value.status == 500
 	assert "boom" in exception_info.value.body
+	assert "boom" in str(exception_info.value)
 
 
 def test_error_bodies_are_truncated(transport, httpserver):
@@ -253,6 +254,8 @@ def test_error_bodies_are_truncated(transport, httpserver):
 		transport.request("GET", "/organizations")
 
 	assert len(exception_info.value.body) < 1000
+	assert "x" * 500 in str(exception_info.value)
+	assert "x" * 501 not in str(exception_info.value)
 
 
 def test_the_session_key_never_appears_in_an_error(transport, httpserver):
@@ -265,6 +268,7 @@ def test_the_session_key_never_appears_in_an_error(transport, httpserver):
 	assert SESSION_KEY not in exception_info.value.body
 	assert SESSION_KEY not in str(exception_info.value)
 	assert "sk-ant-sid01" not in exception_info.value.body
+	assert "<redacted-session-key>" in str(exception_info.value)
 
 
 def test_unparseable_success_body_is_an_api_error(transport, httpserver):

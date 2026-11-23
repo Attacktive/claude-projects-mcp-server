@@ -5,6 +5,7 @@ A real server is the only honest way to test it, so these are deliberately the o
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from werkzeug.wrappers import Response
@@ -171,6 +172,30 @@ def test_a_proven_connection_does_not_retry_a_later_challenge(transport, httpser
 		transport.request("GET", "/docs")
 
 	assert len(seen) == 1, "no retry once the connection has proven itself"
+
+
+@pytest.mark.parametrize("warm_worker_first", [False, True])
+def test_a_new_threads_connection_gets_its_own_cold_retry(transport, httpserver, warm_worker_first):
+	httpserver.expect_request("/api/warm").respond_with_json([])
+	cold = _challenge_then(httpserver, "/api/cold", [{"uuid": "o1"}])
+	later = _challenge_then(httpserver, "/api/later", [], challenges=99)
+
+	with ThreadPoolExecutor(max_workers=1) as worker:
+
+		def on_worker(path):
+			return worker.submit(transport.request, "GET", path).result(timeout=5)
+
+		def on_main(path):
+			return transport.request("GET", path)
+
+		warm_request, cold_request = (on_worker, on_main) if warm_worker_first else (on_main, on_worker)
+		assert warm_request("/warm") == []
+		assert cold_request("/cold") == [{"uuid": "o1"}]
+		assert len(cold) == 2
+
+		with pytest.raises(CloudflareBlockedError, match="already answered"):
+			cold_request("/later")
+		assert len(later) == 1
 
 
 def test_204_returns_none(transport, httpserver):

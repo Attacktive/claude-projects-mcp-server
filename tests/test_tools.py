@@ -152,6 +152,16 @@ class TestListProjects:
 
 
 class TestListDocs:
+	async def test_stats_failure_keeps_the_document_listing_with_a_warning(self, api, server):
+		api.add_document(PROJECT, "notes.md", "hello")
+		api.fail_once("GET", r"/kb/stats$", ApiError("claude.ai returned HTTP 502.", status=502))
+
+		result = await call(server, "list_documents", project_id=PROJECT)
+
+		assert [document["file_name"] for document in result["documents"]] == ["notes.md"]
+		assert "knowledge" not in result
+		assert "Capacity was not checked" in result["warning"]
+
 	async def test_lists_documents(self, api, server):
 		api.add_document(PROJECT, "notes.md", "hello")
 
@@ -269,6 +279,15 @@ class TestListDocs:
 
 
 class TestReadDoc:
+	@pytest.mark.parametrize("file_name", ["20261113-0930", "deadbeef-cafe"])
+	async def test_reads_a_hexadecimal_file_name(self, api, server, file_name):
+		uuid = api.add_document(PROJECT, file_name, "hello")
+
+		result = await call(server, "read_document", project_id=PROJECT, document=file_name)
+
+		assert result["uuid"] == uuid
+		assert result["content"] == "hello"
+
 	async def test_reads_by_name(self, api, server):
 		api.add_document(PROJECT, "notes.md", "hello")
 
@@ -535,6 +554,15 @@ class TestWriteDoc:
 
 
 class TestRenameDocument:
+	@pytest.mark.parametrize("file_name", ["20261113-0930", "deadbeef-cafe"])
+	async def test_renames_a_hexadecimal_file_name(self, api, server, file_name):
+		api.add_document(PROJECT, file_name, "hello")
+
+		await call(server, "rename_document", project_id=PROJECT, document=file_name, new_file_name="notes.md")
+
+		assert api.document_names(PROJECT) == ["notes.md"]
+		assert api.content_of(PROJECT, "notes.md") == ["hello"]
+
 	async def test_renames_a_document(self, api, server):
 		uuid = api.add_document(PROJECT, "notes.md", "hello")
 
@@ -626,6 +654,15 @@ class TestDeleteDoc:
 		assert Path(result["backup_path"]).read_text(encoding="utf-8") == "back this up"
 		assert api.document_names(PROJECT) == []
 
+	@pytest.mark.parametrize("file_name", ["20261113-0930", "deadbeef-cafe"])
+	async def test_deletes_a_hexadecimal_file_name(self, api, server, file_name):
+		uuid = api.add_document(PROJECT, file_name, "hello")
+
+		result = await call(server, "delete_document", project_id=PROJECT, document=file_name)
+
+		assert api.document_names(PROJECT) == []
+		assert result["deleted"][0]["uuid"] == uuid
+
 	async def test_deletes_by_uuid(self, api, server):
 		uuid = api.add_document(PROJECT, "notes.md", "hello")
 
@@ -668,7 +705,7 @@ class TestDeleteDoc:
 
 
 class TestPullDocs:
-	async def test_writes_files_and_summarises(self, api, server, tmp_path):
+	async def test_writes_files_and_summarizes(self, api, server, tmp_path):
 		api.add_document(PROJECT, "notes.md", "hello")
 		destination = tmp_path / "out"
 
@@ -698,7 +735,7 @@ class TestPullDocs:
 
 
 class TestPushDocs:
-	async def test_uploads_and_summarises(self, api, server, tmp_path):
+	async def test_uploads_and_summarizes(self, api, server, tmp_path):
 		(tmp_path / "notes.md").write_text("hello", encoding="utf-8")
 
 		result = await call(server, "push_documents", project_id=PROJECT, source_directory=str(tmp_path))

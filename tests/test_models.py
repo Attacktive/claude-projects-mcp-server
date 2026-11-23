@@ -1,7 +1,23 @@
 import pytest
 
 from claude_projects_mcp.errors import ApiError
-from claude_projects_mcp.models import Document, Organization, Project, UploadedFile
+from claude_projects_mcp.models import Document, KnowledgeStats, Organization, Project, UploadedFile
+
+
+class TestKnowledgeStats:
+	@pytest.mark.parametrize("key", ["knowledge_size", "max_knowledge_size", "project_knowledge_search_threshold"])
+	@pytest.mark.parametrize("value", [None, "123", 1.5, True, False, {}, []])
+	def test_invalid_required_counts_raise_a_typed_error(self, key, value):
+		raw = {"knowledge_size": 0, "max_knowledge_size": 100, "project_knowledge_search_threshold": 50, "use_project_knowledge_search": False}
+		raw[key] = value
+
+		with pytest.raises(ApiError, match=key):
+			KnowledgeStats.parse(raw)
+
+	def test_zero_counts_are_valid(self):
+		stats = KnowledgeStats.parse({"knowledge_size": 0, "max_knowledge_size": 0, "project_knowledge_search_threshold": 0, "use_project_knowledge_search": False})
+
+		assert stats == KnowledgeStats(size=0, max_size=0, search_threshold=0, search_mode=False)
 
 
 class TestOrg:

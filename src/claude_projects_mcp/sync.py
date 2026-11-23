@@ -1,6 +1,6 @@
 """Moving a project's documents to and from a local folder.
 
-Claude Code is file-native: pulling once, editing with ordinary tools, and pushing backbeats pushing whole documents through tool calls one at a time.
+Claude Code is file-native: pulling once, editing with ordinary tools, and pushing back beats pushing whole documents through tool calls one at a time.
 
 Pulling brings down the documents and the files uploaded through the web UI, and pushing sends both kinds back: a PDF, PNG, JPEG, GIF, or WebP file goes up as an upload, the way the web UI adds one (captured 2026-09-26), and everything else as a text document.
 An image is reported rather than copied on a pull, since the listing offers no original for one, so a pull-and-push copy carries everything but images.
@@ -75,7 +75,7 @@ class PushOptions:
 	backup_bytes: Callable[[str, bytes], str] | None = None
 
 
-def summarise(results: list[FileResult]) -> dict[str, int]:
+def summarize(results: list[FileResult]) -> dict[str, int]:
 	counts: dict[str, int] = {}
 	for result in results:
 		counts[result.status] = counts.get(result.status, 0) + 1

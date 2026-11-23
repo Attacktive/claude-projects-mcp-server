@@ -1,12 +1,10 @@
 """The MCP surface over Cowork scheduled tasks.
 
-Kept out of `server.py` because scheduled tasks share nothing with documents — no backup store,
-no file names, no overwrite semantics — so the only thing the two would gain from sitting together
-is a longer file.
+Kept out of `server.py` because scheduled tasks share nothing with documents — no backup store, no file names, no overwrite semantics — so the only thing the two would gain from sitting together is a longer file.
 
-These tools manage what a task *is*. Running one is deliberately absent: the API has an endpoint
-for it, but starting a billable Claude run is not something a tool call should be able to do by
-accident. Setting a schedule and letting Cowork run it is the whole point of the feature anyway.
+These tools manage what a task *is*.
+Running one is deliberately absent: the API has an endpoint for it, but starting a billable Claude run is not something a tool call should be able to do by accident.
+Setting a schedule and letting Cowork run it is the whole point of the feature anyway.
 """
 
 from mcp.server.mcpserver import MCPServer

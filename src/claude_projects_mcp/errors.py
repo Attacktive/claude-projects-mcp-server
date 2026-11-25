@@ -52,9 +52,14 @@ class ApiError(ClaudeProjectsError):
 	"""An unexpected response. `body` is already truncated and redacted."""
 
 	def __init__(self, message: str, status: int, body: str = ""):
-		super().__init__(message)
+		super().__init__(f"{message} Response: {body}" if body else message)
+		self.message = message
 		self.status = status
 		self.body = body
+
+
+class ScheduledTaskCronRequestError(ApiError):
+	"""A scheduled-task write containing a cron expression returned HTTP 400."""
 
 
 class DocExistsError(ClaudeProjectsError):

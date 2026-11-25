@@ -279,6 +279,12 @@ class TestListDocs:
 
 
 class TestReadDoc:
+	async def test_preserves_the_api_error_detail(self, api, server):
+		api.fail_once("GET", "/docs$", ApiError("claude.ai returned HTTP 400.", status=400, body='{"error":"project access denied"}'))
+
+		with pytest.raises(ToolError, match="project access denied"):
+			await call(server, "read_document", project_id=PROJECT, document="notes.md")
+
 	@pytest.mark.parametrize("file_name", ["20261113-0930", "deadbeef-cafe"])
 	async def test_reads_a_hexadecimal_file_name(self, api, server, file_name):
 		uuid = api.add_document(PROJECT, file_name, "hello")

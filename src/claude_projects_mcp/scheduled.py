@@ -12,7 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
 from .client import ClaudeProjectsClient
-from .errors import ApiError, ClaudeProjectsError, NotFoundError
+from .errors import ClaudeProjectsError, NotFoundError, ScheduledTaskCronRequestError
 from .models import ScheduledTask
 from .results import with_warning
 
@@ -65,14 +65,14 @@ def _task_dict(task: ScheduledTask) -> dict:
 class translated:
 	"""Turn a typed ClaudeProjectsError into the ToolError the model will actually read.
 
-	Duplicated from `server.py` rather than shared, because the two differ: this one also rewrites the API's bare "The request is invalid." into something a caller can act on, which is only ever about a cron expression here.
+	Add cron guidance when the API rejected a scheduled-task write containing a cron expression.
 	"""
 
 	def __exit__(self, exception_type, exception, traceback):
 		if exception is None:
 			return False
 
-		if isinstance(exception, ApiError) and exception.status == 400:
+		if isinstance(exception, ScheduledTaskCronRequestError):
 			raise ToolError(f"claude.ai rejected the request: {exception} {_CRON_HELP}") from exception
 
 		if isinstance(exception, ClaudeProjectsError):

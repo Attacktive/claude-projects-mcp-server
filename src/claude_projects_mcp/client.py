@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .capacity import Verdict, admits, candidates, judge, line_of, refusal, tokens_of
-from .errors import AmbiguousDocError, ApiError, BackupError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, KnowledgeFullError, NotFoundError, RateLimitedError
+from .errors import AmbiguousDocError, ApiError, BackupError, ClaudeProjectsError, ConcurrentEditError, ConfigError, DocExistsError, KnowledgeFullError, NotFoundError, RateLimitedError, ScheduledTaskCronRequestError
 from .identifiers import chat_project_id
 from .models import Document, KnowledgeStats, Organization, Project, ScheduledTask, UploadedFile
 from .transport import HttpMethod, Transport
@@ -601,6 +601,16 @@ class ClaudeProjectsClient:
 
 		return ScheduledTask.parse_trigger(raw)
 
+	def _write_scheduled_task(self, method: HttpMethod, path: str, payload: dict[str, Any]) -> ScheduledTask:
+		try:
+			raw = self._request(method, path, payload)
+		except ApiError as error:
+			if error.status == 400 and "cron_expression" in payload:
+				raise ScheduledTaskCronRequestError(error.message, status=error.status, body=error.body) from error
+			raise
+
+		return ScheduledTask.parse_trigger(raw)
+
 	def create_scheduled_task(
 		self,
 		project_id: str,
@@ -622,8 +632,7 @@ class ClaudeProjectsClient:
 		if model is not None:
 			payload["model"] = model
 
-		raw = self._request("POST", self._scheduled_tasks_path(organization_id), payload)
-		created = ScheduledTask.parse_trigger(raw)
+		created = self._write_scheduled_task("POST", self._scheduled_tasks_path(organization_id), payload)
 		self._task_organizations[created.id] = organization_id
 
 		return created
@@ -655,9 +664,7 @@ class ClaudeProjectsClient:
 			raise ValueError("Nothing to update: pass at least one of name, prompt, cron_expression, enabled, or model.")
 
 		organization_id = self.resolve_organization_for_task(task_id)
-		raw = self._request("PATCH", f"{self._scheduled_tasks_path(organization_id)}/{task_id}", payload)
-
-		return ScheduledTask.parse_trigger(raw)
+		return self._write_scheduled_task("PATCH", f"{self._scheduled_tasks_path(organization_id)}/{task_id}", payload)
 
 	def delete_scheduled_task(self, task_id: str) -> bool:
 		"""True if this call removed it, False if it was already gone.

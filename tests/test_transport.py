@@ -6,9 +6,9 @@ A real server is the only honest way to test it, so these are deliberately the o
 
 import json
 import threading
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+import curl_cffi
 import pytest
 from curl_cffi.requests.exceptions import Timeout
 from werkzeug.wrappers import Response
@@ -440,7 +440,7 @@ def slowly(httpserver):
 
 	# This request joins the back of the queue, so its answer means every abandoned one has been served.
 	httpserver.expect_request("/idle").respond_with_data("")
-	urllib.request.urlopen(httpserver.url_for("/idle"), timeout=LONG_TIMEOUT_SECONDS).close()
+	curl_cffi.requests.get(httpserver.url_for("/idle"), timeout=LONG_TIMEOUT_SECONDS)
 
 
 @pytest.fixture(params=["download", "upload"])

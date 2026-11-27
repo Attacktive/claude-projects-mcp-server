@@ -5,11 +5,14 @@ A real server is the only honest way to test it, so these are deliberately the o
 """
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from curl_cffi.requests.exceptions import Timeout
 from werkzeug.wrappers import Response
 
+from claude_projects_mcp import transport as transport_module
 from claude_projects_mcp.errors import (
 	ApiError,
 	AuthExpiredError,
@@ -406,3 +409,58 @@ def test_request_bytes_refuses_a_scheme_relative_url_on_another_origin(transport
 
 	assert "origin" in str(exception_info.value)
 	assert not httpserver.log, "nothing may be sent"
+
+
+SHORT_TIMEOUT_SECONDS = 0.2
+SLOW_SECONDS = 0.6
+
+
+def _slowly(payload, content_type):
+	"""Give the right answer, but only after the shortened timeout has passed."""
+
+	def handler(request):
+		time.sleep(SLOW_SECONDS)
+
+		return Response(payload, status=200, content_type=content_type)
+
+	return handler
+
+
+@pytest.fixture
+def short_request_timeout(monkeypatch):
+	"""Shrink the limit a JSON call gets, so that outlasting it takes a fraction of a second instead of half a minute."""
+	monkeypatch.setattr(transport_module, "_REQUEST_TIMEOUT_SECONDS", SHORT_TIMEOUT_SECONDS)
+
+
+def test_request_bytes_is_not_cut_off_at_the_request_timeout(transport, httpserver, short_request_timeout):
+	"""A download takes as long as the file's size and the link allow, so the limit that fits a JSON call must not end it."""
+	httpserver.expect_request(ASSET).respond_with_handler(_slowly(PDF, "application/pdf"))
+
+	assert transport.request_bytes(ASSET) == PDF
+
+
+def test_upload_file_is_not_cut_off_at_the_request_timeout(transport, httpserver, short_request_timeout):
+	httpserver.expect_request("/api/projects/p1/upload", method="POST").respond_with_handler(_slowly(json.dumps({"file_uuid": "f1"}), "application/json"))
+
+	assert transport.upload_file("/projects/p1/upload", file_name="1.png", data=b"\x89PNG", content_type="image/png") == {"file_uuid": "f1"}
+
+
+def test_request_is_still_cut_off_at_the_request_timeout(transport, httpserver, short_request_timeout):
+	"""The longer limit is for files alone: a JSON call that hangs fails as soon as it always did."""
+	httpserver.expect_request("/api/organizations").respond_with_handler(_slowly("[]", "application/json"))
+
+	with pytest.raises(ApiError) as exception_info:
+		transport.request("GET", "/organizations")
+
+	assert isinstance(exception_info.value.__cause__, Timeout)
+
+
+def test_a_file_transfer_is_cut_off_at_the_sum_of_its_pair(transport, httpserver, monkeypatch):
+	"""Without streaming, curl_cffi adds a (connect, read) pair into a cap on the whole transfer, so a transfer that hangs still ends."""
+	monkeypatch.setattr(transport_module, "_FILE_TRANSFER_TIMEOUT_SECONDS", (SHORT_TIMEOUT_SECONDS / 2, SHORT_TIMEOUT_SECONDS / 2))
+	httpserver.expect_request(ASSET).respond_with_handler(_slowly(PDF, "application/pdf"))
+
+	with pytest.raises(ApiError) as exception_info:
+		transport.request_bytes(ASSET)
+
+	assert isinstance(exception_info.value.__cause__, Timeout)

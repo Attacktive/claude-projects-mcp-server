@@ -28,6 +28,15 @@ HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 _MAX_BODY_CHARACTERS = 500
 
+# curl_cffi turns a plain number into a cap on the whole transfer for a request that is not streamed, which a JSON call fits in easily.
+_REQUEST_TIMEOUT_SECONDS = 30
+
+# A file takes as long as its size and the link allow, so a download or an upload gets a longer cap than a JSON call.
+# The pair is (connect, read): without streaming, curl_cffi limits connecting to the first and the whole transfer to their sum, which is 300 seconds here.
+# That carries a text PDF as large as a project's whole knowledge, about 16 MB at the 8 bytes per token one upload measured (2026-11-27), over a link of 0.4 Mbit/s.
+# Only a streamed request gets a true stall timeout, and curl_cffi runs one on a connection of its own, which the cold-start retry could not ride.
+_FILE_TRANSFER_TIMEOUT_SECONDS = (30, 270)
+
 _AUTH_HELP = "claude.ai rejected the session key (HTTP {status}). It has probably expired: copy a fresh sessionKey cookie from claude.ai (DevTools -> Application -> Cookies), update CLAUDE_PROJECTS_SESSION_KEY, and restart the MCP server."
 
 _CLOUDFLARE_HELP_COLD = "claude.ai's bot protection answered instead of the API (HTTP {status}, HTML challenge page), twice in a row on a fresh connection. A single challenge on a cold connection is normal and was retried automatically, so a second suggests the impersonated browser fingerprint has aged out — upgrade curl_cffi (`uv lock --upgrade-package curl-cffi && uv sync`). Failing that, wait a few minutes before retrying rather than looping, or the address may be blocked outright. This is not an authentication problem; re-copying the cookie will not help."
@@ -136,7 +145,7 @@ class CurlCffiTransport:
 			return send()
 
 	def _send(self, method: HttpMethod, path: str, *, json_body: dict | None = None) -> Any:
-		response = self._perform(method, f"{self._base_url}{path}", json=json_body)
+		response = self._perform(method, f"{self._base_url}{path}", timeout=_REQUEST_TIMEOUT_SECONDS, json=json_body)
 		self._check_status(response)
 		return self._decode_json(response)
 
@@ -150,7 +159,7 @@ class CurlCffiTransport:
 			raise ApiError(f"Refusing to fetch {url!r}: it is on a different origin from {self._base_url}, and the session key must not travel there.", status=0)
 
 		# The session's Accept header asks for JSON, which is not what a PDF is.
-		response = self._perform("GET", resolved, headers={"Accept": "*/*"})
+		response = self._perform("GET", resolved, timeout=_FILE_TRANSFER_TIMEOUT_SECONDS, headers={"Accept": "*/*"})
 		self._check_status(response)
 
 		# A stale session can be answered with a 200 login page; as a file, that would be backed up in place of the real one.
@@ -167,16 +176,16 @@ class CurlCffiTransport:
 		try:
 			# The session's Content-Type header says JSON, and libcurl keeps a custom Content-Type as it is, so the form's own type has to be named here; libcurl then appends the boundary to it.
 			# Blanking the header instead leaves libcurl appending the boundary to an empty type, and marking the part as an attachment rather than form data.
-			response = self._perform("POST", f"{self._base_url}{path}", multipart=form, headers={"Content-Type": "multipart/form-data"})
+			response = self._perform("POST", f"{self._base_url}{path}", timeout=_FILE_TRANSFER_TIMEOUT_SECONDS, multipart=form, headers={"Content-Type": "multipart/form-data"})
 		finally:
 			form.close()
 
 		self._check_status(response)
 		return self._decode_json(response)
 
-	def _perform(self, method: HttpMethod, url: str, **options: Any) -> Any:
+	def _perform(self, method: HttpMethod, url: str, *, timeout: float | tuple[float, float], **options: Any) -> Any:
 		try:
-			return self._session.request(method, url, timeout=30, **options)
+			return self._session.request(method, url, timeout=timeout, **options)
 		except ClaudeProjectsError:
 			raise
 		except Exception as exception:

@@ -5,7 +5,8 @@ A real server is the only honest way to test it, so these are deliberately the o
 """
 
 import json
-import time
+import threading
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -412,18 +413,53 @@ def test_request_bytes_refuses_a_scheme_relative_url_on_another_origin(transport
 
 
 SHORT_TIMEOUT_SECONDS = 0.2
-SLOW_SECONDS = 0.6
+LONG_TIMEOUT_SECONDS = 30
+SLOW_SECONDS = 0.4
 
 
-def _slowly(payload, content_type):
-	"""Give the right answer, but only after the shortened timeout has passed."""
+@pytest.fixture
+def slowly(httpserver):
+	"""Build handlers that give the right answer, but only after the shortened timeout has passed, and leave the server idle afterwards.
 
-	def handler(request):
-		time.sleep(SLOW_SECONDS)
+	The server is shared by the whole session and answers one request at a time.
+	A request whose client gave up would otherwise still be waiting there when the next test starts, and would reach that test's handler.
+	"""
+	released = threading.Event()
 
-		return Response(payload, status=200, content_type=content_type)
+	def build(payload, content_type):
+		def handler(request):
+			released.wait(SLOW_SECONDS)
 
-	return handler
+			return Response(payload, status=200, content_type=content_type)
+
+		return handler
+
+	yield build
+
+	released.set()
+
+	# This request joins the back of the queue, so its answer means every abandoned one has been served.
+	httpserver.expect_request("/idle").respond_with_data("")
+	urllib.request.urlopen(httpserver.url_for("/idle"), timeout=LONG_TIMEOUT_SECONDS).close()
+
+
+@pytest.fixture(params=["download", "upload"])
+def slow_file_transfer(request, transport, httpserver, slowly):
+	"""A download or an upload whose answer comes late, as a call that makes the transfer and checks what came back."""
+	if request.param == "download":
+		httpserver.expect_request(ASSET).respond_with_handler(slowly(PDF, "application/pdf"))
+
+		def download():
+			assert transport.request_bytes(ASSET) == PDF
+
+		return download
+
+	httpserver.expect_request("/api/projects/p1/upload", method="POST").respond_with_handler(slowly(json.dumps({"file_uuid": "f1"}), "application/json"))
+
+	def upload():
+		assert transport.upload_file("/projects/p1/upload", file_name="1.png", data=b"\x89PNG", content_type="image/png") == {"file_uuid": "f1"}
+
+	return upload
 
 
 @pytest.fixture
@@ -432,22 +468,14 @@ def short_request_timeout(monkeypatch):
 	monkeypatch.setattr(transport_module, "_REQUEST_TIMEOUT_SECONDS", SHORT_TIMEOUT_SECONDS)
 
 
-def test_request_bytes_is_not_cut_off_at_the_request_timeout(transport, httpserver, short_request_timeout):
-	"""A download takes as long as the file's size and the link allow, so the limit that fits a JSON call must not end it."""
-	httpserver.expect_request(ASSET).respond_with_handler(_slowly(PDF, "application/pdf"))
-
-	assert transport.request_bytes(ASSET) == PDF
+def test_a_file_transfer_is_not_cut_off_at_the_request_timeout(slow_file_transfer, short_request_timeout):
+	"""A file takes as long as its size and the link allow, so the limit that fits a JSON call must not end a download or an upload."""
+	slow_file_transfer()
 
 
-def test_upload_file_is_not_cut_off_at_the_request_timeout(transport, httpserver, short_request_timeout):
-	httpserver.expect_request("/api/projects/p1/upload", method="POST").respond_with_handler(_slowly(json.dumps({"file_uuid": "f1"}), "application/json"))
-
-	assert transport.upload_file("/projects/p1/upload", file_name="1.png", data=b"\x89PNG", content_type="image/png") == {"file_uuid": "f1"}
-
-
-def test_request_is_still_cut_off_at_the_request_timeout(transport, httpserver, short_request_timeout):
-	"""The longer limit is for files alone: a JSON call that hangs fails as soon as it always did."""
-	httpserver.expect_request("/api/organizations").respond_with_handler(_slowly("[]", "application/json"))
+def test_request_is_still_cut_off_at_the_request_timeout(transport, httpserver, slowly, short_request_timeout):
+	"""The longer limit is for files alone: a JSON call that hangs is cut off at the request timeout."""
+	httpserver.expect_request("/api/organizations").respond_with_handler(slowly("[]", "application/json"))
 
 	with pytest.raises(ApiError) as exception_info:
 		transport.request("GET", "/organizations")
@@ -455,12 +483,26 @@ def test_request_is_still_cut_off_at_the_request_timeout(transport, httpserver, 
 	assert isinstance(exception_info.value.__cause__, Timeout)
 
 
-def test_a_file_transfer_is_cut_off_at_the_sum_of_its_pair(transport, httpserver, monkeypatch):
-	"""Without streaming, curl_cffi adds a (connect, read) pair into a cap on the whole transfer, so a transfer that hangs still ends."""
+def test_a_file_transfer_that_hangs_is_cut_off(slow_file_transfer, monkeypatch):
+	"""The longer limit is still a limit: a download or an upload whose answer does not come in time ends."""
 	monkeypatch.setattr(transport_module, "_FILE_TRANSFER_TIMEOUT_SECONDS", (SHORT_TIMEOUT_SECONDS / 2, SHORT_TIMEOUT_SECONDS / 2))
-	httpserver.expect_request(ASSET).respond_with_handler(_slowly(PDF, "application/pdf"))
 
 	with pytest.raises(ApiError) as exception_info:
-		transport.request_bytes(ASSET)
+		slow_file_transfer()
 
 	assert isinstance(exception_info.value.__cause__, Timeout)
+
+
+@pytest.mark.parametrize("pair", [(SHORT_TIMEOUT_SECONDS, LONG_TIMEOUT_SECONDS), (LONG_TIMEOUT_SECONDS, SHORT_TIMEOUT_SECONDS)])
+def test_neither_number_of_the_pair_alone_cuts_a_file_transfer_off(slow_file_transfer, monkeypatch, pair):
+	"""Without streaming, curl_cffi adds a (connect, read) pair into a cap on the whole transfer, so a transfer outlasts whichever number is the shorter."""
+	monkeypatch.setattr(transport_module, "_FILE_TRANSFER_TIMEOUT_SECONDS", pair)
+
+	slow_file_transfer()
+
+
+def test_a_file_transfer_is_allowed_longer_than_a_json_call():
+	"""The other tests each shorten one of the two limits, so only this one notices the real file limit falling back to the request one."""
+	connect, read = transport_module._FILE_TRANSFER_TIMEOUT_SECONDS
+
+	assert connect + read > transport_module._REQUEST_TIMEOUT_SECONDS

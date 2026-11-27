@@ -28,13 +28,16 @@ HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 _MAX_BODY_CHARACTERS = 500
 
-# curl_cffi turns a plain number into a cap on the whole transfer for a request that is not streamed, which a JSON call fits in easily.
+# curl_cffi turns a plain number into a cap on the whole transfer for a request that is not streamed.
+# Every JSON call shares it, including a listing or a write that carries whole documents.
 _REQUEST_TIMEOUT_SECONDS = 30
 
 # A file takes as long as its size and the link allow, so a download or an upload gets a longer cap than a JSON call.
 # The pair is (connect, read): without streaming, curl_cffi limits connecting to the first and the whole transfer to their sum, which is 300 seconds here.
-# That carries a text PDF as large as a project's whole knowledge, about 16 MB at the 8 bytes per token one upload measured (2026-11-27), over a link of 0.4 Mbit/s.
-# Only a streamed request gets a true stall timeout, and curl_cffi runs one on a connection of its own, which the cold-start retry could not ride.
+# That moves 15 MB over a link of 0.4 Mbit/s, and nothing here bounds a file's size, so a larger one on such a link is still cut off.
+# It is a cap and not a stall timeout: a transfer that goes quiet holds its call for the whole 300 seconds, and a pull or a backup takes its files one after another.
+# curl_cffi makes the pair a stall timeout only for a streamed request, which it runs on a connection of its own, where the cold-start retry could not ride.
+# A low-speed limit in the session's curl_options would be one without streaming, but it also counts a silent server as a stall, and how long claude.ai stays silent after receiving an upload has not been measured.
 _FILE_TRANSFER_TIMEOUT_SECONDS = (30, 270)
 
 _AUTH_HELP = "claude.ai rejected the session key (HTTP {status}). It has probably expired: copy a fresh sessionKey cookie from claude.ai (DevTools -> Application -> Cookies), update CLAUDE_PROJECTS_SESSION_KEY, and restart the MCP server."

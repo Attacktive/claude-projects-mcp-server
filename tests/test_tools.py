@@ -521,7 +521,7 @@ class TestWriteDoc:
 
 		message = str(exception_info.value)
 		assert "Writing 'new.md' (10 tokens) would push the project past its search threshold: 105 of 100 tokens, 5 over." in message
-		assert "There is no other document to compact; shrink this content. The files listing shows an uploaded file, which counts toward the project's size but can be removed only in the web UI: 'handbook.pdf' (1,000 bytes, 12 pages)." in message
+		assert "There is no other document to compact; shrink this content. The files listing shows an uploaded file, which counts toward the project's size but can be deleted outright only in the web UI: 'handbook.pdf' (1,000 bytes, 12 pages)." in message
 		assert api.content_of(PROJECT, "new.md") == []
 
 	async def test_a_refusal_says_when_the_uploads_could_not_be_listed(self, api, server):
@@ -557,6 +557,16 @@ class TestWriteDoc:
 
 		assert "knowledge" not in result
 		assert "Capacity was not checked" in result["warning"]
+
+	async def test_a_created_document_without_a_token_count_warns_capacity_not_checked(self, api, server):
+		"""The knowledge size is reported here, so the warning cannot lay the blame on it alone."""
+		api.list_includes_token_counts = False
+
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.md", content="hello")
+
+		assert "knowledge" not in result
+		assert "Capacity was not checked" in result["warning"]
+		assert "no token count for the new document" in result["warning"]
 
 
 class TestRenameDocument:

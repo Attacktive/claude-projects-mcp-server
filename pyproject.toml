@@ -1,7 +1,7 @@
 [project]
 name = "claude-projects-mcp-server"
 version = "0.9.1"
-description = "MCP server exposing Claude Cowork / claude.ai project knowledge documents to Claude Code"
+description = "MCP server exposing Claude Cowork / claude.ai projects, their knowledge documents, and their scheduled tasks to Claude Code"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.14"

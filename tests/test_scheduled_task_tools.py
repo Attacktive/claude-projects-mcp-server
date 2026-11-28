@@ -132,6 +132,14 @@ class TestCreating:
 		assert "The request is invalid." in str(error.value)
 		assert ("five" in str(error.value)) is (cron is not None)
 
+	async def test_a_rejected_cron_on_a_create_says_how_to_make_a_manual_task(self, server, scheduled_api):
+		scheduled_api.fail_once("POST", "/scheduled_tasks$", ApiError("claude.ai returned HTTP 400.", status=400, body="The request is invalid."))
+
+		with pytest.raises(ToolError) as error:
+			await call(server, "create_scheduled_task", project_id=PROJECT_UUID, name="Digest", prompt="Hello", cron_expression="bad cron")
+
+		assert "Omit it entirely for a task that only runs when somebody asks." in str(error.value)
+
 	async def test_a_manual_task_is_created(self, server):
 		result = await call(
 			server,
@@ -218,6 +226,17 @@ class TestUpdating:
 
 		assert "The request is invalid." in str(error.value)
 		assert ("five" in str(error.value)) is ("cron_expression" in changes)
+
+	async def test_a_rejected_cron_on_an_update_does_not_advise_omitting_it(self, server, scheduled_api):
+		"""Leaving cron_expression out of an update keeps the schedule the task already has, so it makes no task manual."""
+		task_id = scheduled_api.add_scheduled_task(ORGANIZATION, name="Before", project_uuid=PROJECT_UUID)
+		scheduled_api.fail_once("PATCH", "/scheduled_tasks/", ApiError("claude.ai returned HTTP 400.", status=400, body="The request is invalid."))
+
+		with pytest.raises(ToolError) as error:
+			await call(server, "update_scheduled_task", task_id=task_id, cron_expression="bad cron")
+
+		assert "five space-separated fields" in str(error.value)
+		assert "Omit it" not in str(error.value)
 
 	async def test_a_name_can_be_changed_alone(self, server, scheduled_api):
 		task_id = scheduled_api.add_scheduled_task(ORGANIZATION, name="Before", prompt="Original.", project_uuid=PROJECT_UUID)

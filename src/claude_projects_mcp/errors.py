@@ -34,7 +34,7 @@ class AuthExpiredError(ClaudeProjectsError):
 class CloudflareBlockedError(ClaudeProjectsError):
 	"""Bot protection rejected the request before it reached the API.
 
-	Distinct from AuthExpiredError because the fix is different: upgrade curl_cffi so a newer browser fingerprint is impersonated, rather than re-copying the cookie.
+	Distinct from AuthExpiredError because re-copying the cookie does not help: the message says which to try first, upgrading curl_cffi for a newer browser fingerprint or waiting out a block.
 	"""
 
 
@@ -45,7 +45,7 @@ class RateLimitedError(ClaudeProjectsError):
 
 
 class NotFoundError(ClaudeProjectsError):
-	"""The organization, project, or document does not exist (or is not visible to this account)."""
+	"""The organization, project, document, or scheduled task does not exist (or is not visible to this account), or an upload offers no original to download."""
 
 
 class ApiError(ClaudeProjectsError):

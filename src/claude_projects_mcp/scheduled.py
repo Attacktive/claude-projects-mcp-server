@@ -93,7 +93,7 @@ class translated:
 def register(server: MCPServer, client: ClaudeProjectsClient) -> None:
 	"""Add the scheduled-task tools to an already-built server.
 
-	Split by what the tools do to the world, the same way `server.py` groups its own, because one function holding five closures grows past the point where anyone can see its shape.
+	Split by what the tools do to the world, because one function holding five closures grows past the point where anyone can see its shape.
 	"""
 	_register_reading(server, client)
 	_register_writing(server, client)

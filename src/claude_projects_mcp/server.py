@@ -385,7 +385,7 @@ def _leftover_warning(result: ReplaceResult) -> str | None:
 
 def _write_capacity_warning(result: ReplaceResult, existing: list[Document]) -> str | None:
 	if result.knowledge is None:
-		return "Capacity was not checked: claude.ai did not report the project's knowledge size. The write went ahead; check list_documents for where the project stands."
+		return "Capacity was not checked: claude.ai reported no knowledge size for the project, or no token count for the new document. The write went ahead; check list_documents for where the project stands."
 
 	if result.rollback_failed:
 		if result.knowledge.size > result.knowledge.max_size:

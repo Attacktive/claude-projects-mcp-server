@@ -558,6 +558,16 @@ class TestWriteDoc:
 		assert "knowledge" not in result
 		assert "Capacity was not checked" in result["warning"]
 
+	async def test_a_created_document_without_a_token_count_warns_capacity_not_checked(self, api, server):
+		"""The knowledge size is reported here, so the warning cannot lay the blame on it alone."""
+		api.list_includes_token_counts = False
+
+		result = await call(server, "write_document", project_id=PROJECT, file_name="notes.md", content="hello")
+
+		assert "knowledge" not in result
+		assert "Capacity was not checked" in result["warning"]
+		assert "no token count for the new document" in result["warning"]
+
 
 class TestRenameDocument:
 	@pytest.mark.parametrize("file_name", ["20261113-0930", "deadbeef-cafe"])

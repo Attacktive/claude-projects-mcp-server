@@ -23,12 +23,12 @@ _MAX_COMPOUND_EXTENSION_BYTES = 16
 
 
 def sanitize(name: str, fallback: str = "untitled", default_suffix: str | None = _DEFAULT_SUFFIX) -> str:
-	"""A filesystem-safe version of a remote document name.
+	"""A filesystem-safe version of a remote document's or upload's name.
 
 	Non-ASCII is preserved deliberately — the documents this serves are Korean, and transliterating them would make the local folder unreadable.
 	A name longer than 200 bytes of UTF-8 is cut to fit, keeping its extension, because a filesystem stops at 255 and Hangul is three bytes a character.
 
-	Pass `default_suffix=None` for a name that is not a file, such as a directory.
+	Pass `default_suffix=None` for a name that must not gain `.md`, such as a directory or an uploaded file.
 	"""
 	# NFC first, so the same name from macOS and Linux lands on one spelling.
 	cleaned = unicodedata.normalize("NFC", name).strip()

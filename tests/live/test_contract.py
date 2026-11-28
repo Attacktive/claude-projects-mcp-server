@@ -253,7 +253,7 @@ def test_uploaded_files_can_be_listed(client, project):
 
 @skip_unless_live
 def test_an_upload_downloads_as_its_original_bytes(client):
-	"""Read-only: finds the first project on the account that holds an upload, because nothing here can create one.
+	"""Read-only: finds the first project on the account that holds an upload with an original, because the one upload this suite sends is a PNG, which offers none to download.
 
 	Skipped when no project has any, which proves nothing either way; upload a PDF to a private project to make it run.
 	"""

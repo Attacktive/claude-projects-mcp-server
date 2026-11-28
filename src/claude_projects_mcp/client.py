@@ -162,7 +162,7 @@ class ClaudeProjectsClient:
 		"""Which organization owns this project.
 
 		Needed because an account can belong to several organizations and a project uuid alone does not say which one it lives in.
-		Every organization is searched, and every owner found along the way is cached, so this costs at most one listing per organization per session.
+		Every organization is searched, and every owner found along the way is cached, so finding a project costs at most one listing per organization, once; a uuid found nowhere costs that again on every call.
 		"""
 		if project_id in self._project_organizations:
 			return self._project_organizations[project_id]
@@ -302,8 +302,8 @@ class ClaudeProjectsClient:
 	def delete_project(self, project_id: str) -> bool:
 		"""True if this call removed it, False if it was already gone.
 
-		This destroys every document in the project and there is no server-side undo.
-		The caller is expected to have backed the documents up first; see the `delete_project` tool, which will not run without the project's name typed back.
+		This destroys every document and uploaded file in the project and there is no server-side undo.
+		The caller is expected to have backed them up first; see the `delete_project` tool, which will not run without the project's name typed back.
 		"""
 		try:
 			organization_id = self.resolve_organization_for_project(project_id)
@@ -343,7 +343,7 @@ class ClaudeProjectsClient:
 		return f"/organizations/{organization_id}/projects/{project_id}/files"
 
 	def list_uploaded_files(self, project_id: str) -> list[UploadedFile]:
-		"""Files uploaded through the web UI, newest first.
+		"""Files uploaded to the project, through the web UI or `upload_file`, newest first.
 
 		They count toward the project's knowledge size but never appear in the documents listing (observed 2026-09-18), so every operation that claims to cover a whole project has to ask here as well.
 		"""
@@ -409,7 +409,7 @@ class ClaudeProjectsClient:
 		# A teammate removing something meanwhile would read as a shrinking upload; nothing added is the floor.
 		added = max(after.size - before.size, 0)
 		if added == 0:
-			# A count that did not move cannot be told from one not yet updated, so this is unmeasured rather than a fit; whether the size reflects an upload at once is unverified, and the live canary asserts that it grows.
+			# A count that did not move cannot be told from one not yet updated, so this is unmeasured rather than a fit; one live run has seen the size reflect an upload at once, which is one observation, and the live canary asserts that it grows.
 			return self._unchecked_upload(project_id, created, replacing, backup_path)
 
 		verdict = judge(after, added, 0)
@@ -718,7 +718,7 @@ class ClaudeProjectsClient:
 		allow_search_mode: bool = False,
 		backup: Callable[[str, str], str] | None = None,
 	) -> ReplaceResult:
-		"""The single gated write primitive: backup replacing[0] if any, create, measure, keep or revert."""
+		"""The gated write for a document, as `upload_file` is for an upload: backup replacing[0] if any, create, measure, keep or revert."""
 		backup_path = self._backup_before_save(project_id, file_name, replacing, backup)
 		created = self.create_document(project_id, file_name, content)
 		stats, _ = self.try_knowledge_stats(project_id)

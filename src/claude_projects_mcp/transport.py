@@ -1,6 +1,6 @@
-"""HTTP to claude.ai, and the only place in the package that knows about status codes.
+"""HTTP to claude.ai, and where every status code becomes a typed error.
 
-Everything above this module deals in typed errors and parsed JSON.
+Everything above this module deals in typed errors and parsed JSON; the one status read above it is `ApiError.status`, which the client checks to tell a rejected cron expression from other 400s.
 That boundary is what keeps the claude.ai-specific auth swappable if an official API ever arrives.
 """
 
@@ -225,7 +225,7 @@ class CurlCffiTransport:
 		if not _looks_like_html(self._safe(response.text or ""), response.headers.get("content-type", "")):
 			return
 
-		# On a cold connection the first challenge never escapes — `request` retries it — so the cold message can honestly say "twice in a row".
+		# On a cold connection the first challenge never escapes, since `_with_cold_retry` retries it on every path, so the cold message can honestly say "twice in a row".
 		if getattr(self._connection, "established", False):
 			raise CloudflareBlockedError(_CLOUDFLARE_HELP_ESTABLISHED.format(status=status))
 

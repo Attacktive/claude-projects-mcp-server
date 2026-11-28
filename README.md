@@ -151,6 +151,7 @@ Run this way, the server finds the `.env` sitting next to the project by itself;
 
 Every tool that acts on a project takes an explicit `project_id`; only `list_projects` and `create_project` are account-wide.
 Scheduled tasks are addressed by their own `task_id` once they exist, so only `create_scheduled_task` names a project; on `list_scheduled_tasks` a `project_id` narrows the listing and omitting it widens the search to the account.
+An `organization_id` narrows `list_projects`, and `list_scheduled_tasks` without a `project_id`, to one organization; `create_project` needs one on an account in several organizations, and its error names them.
 Start with `list_projects` to find the uuid, or take it from the URL: `https://claude.ai/cowork/project/<this-part>`.
 
 Give documents a file extension: the web UI picks its renderer by name, so `notes` displays as plain text where `notes.md` renders as markdown.
@@ -158,6 +159,7 @@ Give documents a file extension: the web UI picks its renderer by name, so `note
 
 `push_documents` takes `patterns`, a list of file name patterns that defaults to `['*.md']`, and merges what they match into one push — each file once, in name order — so the capacity gate and a dry run judge the whole set: `patterns=['*.md', '*.pdf']` sends a folder's Markdown files and PDFs and nothing else.
 A pattern that matches no file comes back as an `unmatched_pattern` row and in the `warning`, so a mistyped one does not go unnoticed behind what the others matched.
+As in a shell, a pattern matches a file whose name starts with a period only when the pattern starts with one too, so `patterns=['*']` leaves such files behind, each as a `skipped_hidden` row; pass `'.*'` or the exact name to send them.
 A file goes up under the name its folder lists it by, however a pattern spelled it: where the filesystem ignores case or the Unicode form of a name, `NOTES.md` finds `notes.md`, and the two are one file sent once.
 Through 0.8.2 this was a single `pattern` string; a call that still passes one is refused with an error that spells the `patterns` form, so update any saved prompt that uses it.
 Left alone, the MCP SDK would drop an argument the schema lacks without an error (observed with `mcp` 2.3.0), and the default `['*.md']` would decide what is sent.
@@ -180,7 +182,7 @@ The API enforces neither line on writes, so this server enforces them:
 - A write that would grow the project past a line is undone and refused, naming up to three candidate documents most worth compacting (duplicates first, then by size and age).
 - Passing `allow_search_mode=true` accepts crossing the search threshold (with a warning); nothing accepts exceeding the maximum capacity.
 - `list_documents` reports current knowledge capacity usage under the `knowledge` key, and the uploaded files that count toward it under `uploaded_files`.
-- Uploaded files are never compaction candidates, because only the web UI can remove one, so a refusal names up to three of them in a sentence of their own, largest first.
+- Uploaded files are never compaction candidates, because a write from here deletes one only in place of a replacement, which is judged as if the old copy stayed, so a refusal names up to three of them in a sentence of their own, largest first, for deleting in the web UI.
   The files listing reports no token count for an upload, so they are ranked and described by their bytes.
 - An upload pushed from here is gated the same way, with its cost measured as the change in the knowledge size across the upload, since the API reports no token count for one; a refused upload is deleted again.
   One the gate could not measure, because the size was not reported or did not move, is kept with a warning saying so rather than reported as checked.
@@ -208,10 +210,12 @@ The API has an endpoint for it, but starting a billable Claude run is not someth
 It is deliberately awkward: `confirm_name` must match the project's current name exactly, and every text document and every uploaded file is copied to the backup directory before anything is deleted.
 If that copy fails for any of them, or the files listing itself cannot be fetched, the project is left standing.
 An upload with no downloadable original blocks the deletion too: an image offers only a preview, which is a rendition rather than the file, so remove it in the web UI first or delete the project there.
+So does an upload the files listing gives no size for, or a size of zero, since the size is the only check on what a backup brought down.
 
 **The backup directory is not an undo feature.**
 It captures only what *this tool* overwrites, it lives on one machine, and it knows nothing about edits made by teammates in the web UI.
-One known gap: when an interrupted save has left several documents sharing a name, a replacing write backs up only the newest before removing them all — if a teammate may have edited an older duplicate, check it with `read_document` first, as its warning suggests.
+One known gap: when several documents share a name, as an interrupted save can leave them, a replacing write backs up only the newest before removing them all, and a push with `overwrite=true` does the same to uploads that share a name.
+If a teammate may have edited an older copy, check it first: a document with `read_document`, as its warning suggests, and an upload with `pull_documents`, which brings each one down under a name of its own.
 Do not describe it to the team as a safety net.
 
 ### Credentials

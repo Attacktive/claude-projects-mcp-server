@@ -106,9 +106,9 @@ def hint(verdict: Verdict) -> list[str]:
 
 
 def uploads_note(uploads: list[UploadedFile] | None) -> list[str]:
-	"""The uploads taking up room that no write from here can free, as zero or one sentence, with `None` meaning the files listing could not be fetched.
+	"""The uploads taking up room, as zero or one sentence, with `None` meaning the files listing could not be fetched.
 
-	They are named apart from the compaction candidates because only the web UI can remove one, and ranked by bytes because the files listing reports no token count for them.
+	They are named apart from the compaction candidates because a write from here deletes one only in place of a replacement, which is judged as if the old copy stayed, and ranked by bytes because the files listing reports no token count for them.
 	The sentence speaks of what the listing shows rather than what the project holds, because whether that listing truncates is unknown.
 	"""
 	if uploads is None:
@@ -120,12 +120,12 @@ def uploads_note(uploads: list[UploadedFile] | None) -> list[str]:
 	largest = sorted(uploads, key=lambda upload: upload.size_bytes if upload.size_bytes is not None else -1, reverse=True)
 	named = "; ".join(_format_upload(upload) for upload in largest[:_UPLOADS_NAMED])
 	if len(uploads) == 1:
-		return [f"The files listing shows an uploaded file, which counts toward the project's size but can be removed only in the web UI: {named}."]
+		return [f"The files listing shows an uploaded file, which counts toward the project's size but can be deleted outright only in the web UI: {named}."]
 
 	if len(uploads) <= _UPLOADS_NAMED:
-		return [f"The files listing shows {len(uploads)} uploaded files, which count toward the project's size but can be removed only in the web UI: {named}."]
+		return [f"The files listing shows {len(uploads)} uploaded files, which count toward the project's size but can be deleted outright only in the web UI: {named}."]
 
-	return [f"The files listing shows {len(uploads)} uploaded files, which count toward the project's size but can be removed only in the web UI; the largest listed are {named}."]
+	return [f"The files listing shows {len(uploads)} uploaded files, which count toward the project's size but can be deleted outright only in the web UI; the largest listed are {named}."]
 
 
 def candidates(documents: list[Document], excluding: str) -> list[Candidate]:

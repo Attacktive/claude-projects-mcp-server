@@ -59,7 +59,7 @@ class FileResult:
 	local_path: str | None = None
 	detail: str | None = None
 	backup_path: str | None = None
-	# "document" for a text document, "upload" for a file uploaded through the web UI, which comes down as bytes, and "pattern" for a push pattern that matched no file, whose row stands for no file at all.
+	# "document" for a text document, "upload" for a file in the files listing or headed for it, which travels as bytes, and "pattern" for a push pattern that matched no file, whose row stands for no file at all.
 	kind: str = "document"
 	# What the model must be told about this row, which the server lifts into the result's top-level warning; not part of the row as serialized.
 	warning: str | None = None
@@ -121,7 +121,7 @@ def pull(
 
 
 def _noting_rename(result: FileResult, remote_name: str, local_name: str) -> FileResult:
-	"""The result of a document that lives under a name other than its remote one, with a warning attached.
+	"""The result of a document that lives under a name other than its remote one, with a note added to its detail.
 
 	A name is changed when it holds characters a filesystem rejects, lacks an extension and gains the `.md` default, is spelled in a different Unicode normalization, is too long for a filesystem, or collides with another document's.
 	`push` matches local names against remote ones, so pushing such a file back would create a second document rather than update this one, and every pull says so because every pull is a chance to push.
@@ -230,7 +230,7 @@ def _pull_one(
 
 
 class _RemoteUploads:
-	"""The project's uploads by name, listed the first time a file is pushed as one and never otherwise, since most pushes carry text alone.
+	"""The project's uploads by name, listed the first time a file is pushed as one, since most pushes carry text alone, unless a dry run's preview already fetched the listing.
 
 	A listing that fails is remembered rather than retried per file: pushing an upload blind would mint a duplicate, and one round trip that failed is not made to fail again for every PDF in the folder.
 	"""
@@ -287,7 +287,7 @@ class _PushContext:
 	options: PushOptions
 	# Present on a dry run only.
 	preview: _Preview | None
-	# The files listing, fetched only if a file in the folder is pushed as an upload.
+	# The files listing, fetched only if a file in the folder is pushed as an upload or a dry run's preview needed it.
 	uploads: _RemoteUploads
 
 
@@ -777,7 +777,7 @@ def _same_bytes(client: ClaudeProjectsClient, existing: UploadedFile, data: byte
 def _upload_row(path: Path, name: str, status: str, result: ReplaceResult, replacing: UploadedFile | None) -> FileResult:
 	"""The row for an upload that went through, including what did not go to plan: a rollback that failed, a capacity check that could not be made, a name the server changed, an old copy that would not delete.
 
-	The first two are also warnings the model relays, because each changes what the caller can rely on: the gate did not run, or the next push adds a copy.
+	All but the last are also warnings the model relays, because each changes what the caller can rely on: the project may be left past a line, the gate did not run, or the next push adds a copy.
 	The unchecked warning names no file, so a push whose every upload went unmeasured relays it once.
 	"""
 	if result.rollback_failed:

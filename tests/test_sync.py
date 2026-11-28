@@ -655,7 +655,7 @@ class TestPush:
 		assert statuses(results) == {"a.md": "refused_full"}
 		detail = results[0].detail
 		assert detail is not None
-		assert "The files listing shows an uploaded file, which counts toward the project's size but can be removed only in the web UI: 'handbook.pdf' (1,000 bytes, 12 pages)." in detail
+		assert "The files listing shows an uploaded file, which counts toward the project's size but can be deleted outright only in the web UI: 'handbook.pdf' (1,000 bytes, 12 pages)." in detail
 
 	def test_a_dry_run_estimates_at_the_rate_the_project_shows(self, api, client, tmp_path):
 		"""The fake counts one token per character; a project holding such a document teaches the preview that rate, and a file it would refuse at that rate is refused."""
